@@ -1,0 +1,56 @@
+/*
+Gstreams attempts to fill the gaps ub the Go/Kafka library ecosystem. It supplies EOS (Exactly Once Semantics),
+local state stores and incremental consumer rebalancing to Go, making it a viable alternative to
+a traditional Kafka Streams application written in Java.
+
+Gstreams takes advantage of Go generics.
+As such, thie minimum requred Go version is 1.18.
+
+What it is
+
+Gstreams is Go/Kafka library tailored towards the development of
+[Event Sourcing applications](https://martinfowler.com/eaaDev/EventSourcing.html), by providing a high-throughput, low-latency
+Kafka client framework. Using Kafka transactions, it provides for EOS, data integrity and high availability.
+If you wish to use Gstreams as straight Kafka consumer, it will fit the bill as well. Though there are plenty of libraries for that,
+and researching which best fits your use case is time well spent.
+
+What it is not
+
+Gstreams is not an all-in-one, do-everything black box. Some elements, in particular the StateStore, have been left without
+comprehensive implementations.
+
+A useful and performant local state store rarely has a flat data structure. If your state store does, there are some
+convenient implementations provided. However, to achieve optimum performance, you will not only need to write a StateStore implementation,
+but will also need to understand what the proper data structures are for your use case (trees, heaps, maps, disk-based LSM trees or combinations thereof).
+You can use the provided stores.SimpleKeyedValueStore as a starting point.
+
+Incremental Consumer Rebalancing
+
+[TODO]
+
+Interjections
+
+For this familiar with thw Kafka Streams API, Gstreams provides for stream Punctuators, but we call them `Interjections` (because it sounds cool).
+Interjections allow you to insert actions into your EventSource at specicifed interval per partition assigned via EventSource.ScheduleInterjection(),
+or at any time via EventSource.Interject(). This is useful for bookeeping activities, aggregated metric production or
+even error handling. Interjections have full access to the StateStore associated with an EventSource and can interact with output topics
+like any other EventProcessor.
+
+EOS Gstreams Style
+
+[TODO]
+
+Kafka Client Library
+
+Rather than create yet another Kafka driver, Gstreams is built on top of [kgo](https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo). This Kafka client was chosen
+as it has superior throughput and latency profiles compared to other client libraries currently available to Go developers.
+
+One other key adavantage is that it provides a migration path to cooperative consumer rebalancing. Other kafka libraries provide cooperative rebalancing,
+but do not allow you to migrate froma non-cooperative rebalancing strategy (range, sticky etc.). This is a major roadblock for existing deployemtns as the
+only migration path is an entirely new consumer group. Which is, to put it mildly, a big challenge for live applications which are allowed zero downtime.
+The kgo package now makes this possible.
+
+Kgo also has the proper hooks need to implement the IncrementalGroupRebalancer, which is necessary for safe deployments when using a local state store.
+
+*/
+package streams

@@ -1,0 +1,148 @@
+package streams
+
+import (
+	"bytes"
+	"sync"
+	"unsafe"
+
+	"github.com/aws/go-kafka-event-source/streams/sak"
+	"github.com/google/uuid"
+)
+
+type eosCommitLog struct {
+	pendingSyncs  map[string]*sync.WaitGroup
+	watermarks    map[TopicPartition]int64
+	mux           sync.Mutex
+	syncMux       sync.Mutex
+	numPartitions int32
+	topic         string
+	changeLog     GlobalChangeLog
+}
+
+const intByteSize = int(unsafe.Sizeof(uintptr(1)))
+
+func writeTopicPartitionToBytes(tp TopicPartition, b *bytes.Buffer) {
+	var arr [intByteSize]byte
+	*(*int64)(unsafe.Pointer(&arr[0])) = int64(tp.Partition)
+	b.Write(arr[:])
+	b.WriteString(tp.Topic)
+}
+
+func writeSignedIntToByteArray[T sak.Signed](i T, b *bytes.Buffer) {
+	var arr [intByteSize]byte
+	*(*int64)(unsafe.Pointer(&arr[0])) = int64(i)
+	b.Write(arr[:])
+}
+
+func readIntegerFromByteArray[T sak.Signed](b []byte) T {
+	return T(*(*int64)(unsafe.Pointer(&b[0])))
+}
+
+func topicPartitionFromBytes(b []byte) (tp TopicPartition) {
+	tp.Partition = readIntegerFromByteArray[int32](b)
+	tp.Topic = string(b[intByteSize:])
+	return
+}
+
+func newEosCommitLog(source Source, numPartitions int) *eosCommitLog {
+	cl := &eosCommitLog{
+		watermarks:    make(map[TopicPartition]int64),
+		pendingSyncs:  make(map[string]*sync.WaitGroup),
+		numPartitions: int32(numPartitions),
+		topic:         source.CommitLogTopicNameForGroupId(),
+	}
+	cl.changeLog = NewGlobalChangeLog(source.stateCluster(), cl, numPartitions, cl.topic)
+	return cl
+}
+
+func (cl *eosCommitLog) commitRecordPartition(tp TopicPartition) int32 {
+	return tp.Partition % cl.numPartitions
+}
+
+func (cl *eosCommitLog) commitRecord(tp TopicPartition, offset int64) *Record {
+	record := NewRecord().WithTopic(cl.topic).WithPartition(cl.commitRecordPartition(tp))
+	writeTopicPartitionToBytes(tp, record.KeyWriter())
+	// increment so we start consuming at the next offset
+	writeSignedIntToByteArray(offset+1, record.ValueWriter())
+	return record
+}
+
+func (cl *eosCommitLog) ReceiveChange(record IncomingRecord) {
+	if record.isMarkerRecord() {
+		cl.closeSyncRequest(string(record.Value()))
+	} else {
+		tp := topicPartitionFromBytes(record.Key())
+		offset := readIntegerFromByteArray[int64](record.Value())
+		cl.mux.Lock()
+		cl.watermarks[tp] = offset
+		cl.mux.Unlock()
+	}
+}
+
+func (cl *eosCommitLog) Revoked() {}
+
+func (cl *eosCommitLog) closeSyncRequest(mark string) {
+	cl.syncMux.Lock()
+	if wg, ok := cl.pendingSyncs[mark]; ok {
+		delete(cl.pendingSyncs, mark)
+		wg.Done()
+	}
+	cl.syncMux.Unlock()
+}
+
+func (cl *eosCommitLog) syncAll() {
+	wg := &sync.WaitGroup{}
+	for i := int32(0); i < cl.numPartitions; i++ {
+		tp := TopicPartition{
+			Partition: i,
+			Topic:     cl.topic,
+		}
+		wg.Add(1)
+		go func() {
+			cl.syncCommitLogPartition(tp)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+}
+
+func (cl *eosCommitLog) lastProcessed(tp TopicPartition) int64 {
+	cl.syncCommitLogPartition(TopicPartition{
+		Partition: cl.commitRecordPartition(tp),
+		Topic:     cl.topic,
+	})
+	return cl.Watermark(tp)
+}
+
+func (cl *eosCommitLog) syncCommitLogPartition(tp TopicPartition) {
+	cl.syncMux.Lock()
+	mark := uuid.NewString()
+	markWaiter := &sync.WaitGroup{}
+	markWaiter.Add(1)
+	cl.pendingSyncs[mark] = markWaiter
+	cl.syncMux.Unlock()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	sendMarkerMessage(cl.changeLog.client, tp, []byte(mark), &wg)
+	wg.Wait()
+	markWaiter.Wait()
+}
+
+func (cl *eosCommitLog) Watermark(tp TopicPartition) int64 {
+	cl.mux.Lock()
+	defer cl.mux.Unlock()
+	if offset, ok := cl.watermarks[tp]; ok {
+		return offset
+	}
+	return -1
+}
+
+func (cl *eosCommitLog) Stop() {
+	cl.changeLog.Stop()
+	cl.changeLog.client.Close()
+}
+
+func (cl *eosCommitLog) Start() {
+	cl.changeLog.Start()
+}

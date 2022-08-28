@@ -1,0 +1,111 @@
+// package "sak" (Swiss-Army-Knife) provides some basic util functions
+package sak
+
+import (
+	"unsafe"
+)
+
+// Simple utilty for swapping struct T to a ptr T
+// Wether or not this creates a heap escape is up to the compiler.
+// This method simply return &v
+func Ptr[T any](v T) *T {
+	return &v
+}
+
+type Signed interface {
+	~int | ~int16 | ~int32 | ~int64 | ~int8
+}
+
+type Unsigned interface {
+	~uint | ~uint16 | ~uint32 | ~uint64 | uint8
+}
+
+type Float interface {
+	~float32 | ~float64
+}
+
+type Number interface {
+	Signed | Unsigned | Float
+}
+
+// A generic version of math.Min with the added bonus of accepting more than 2 arguments.
+func Min[T Number](min T, vals ...T) T {
+	for _, v := range vals {
+		if v < min {
+			min = v
+		}
+	}
+	return min
+}
+
+// A generic version of math.Max with the added bonus of accepting more than 2 arguments.
+func Max[T Number](max T, vals ...T) T {
+	for _, v := range vals {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// A utility function that converts a slice of T to a slice of *T.
+// Useful when you don't want consumer of your package to be able to mutate an argument passed to you,
+// but you need to mutate it internally (accept a slice of structs, then swap them to pointers).
+// This methos forces a heap escape via
+//
+// ptr := new(T)
+//
+// Used internally but exposed for your consumption.
+func ToPtrSlice[T any](structs []T) []*T {
+	pointers := make([]*T, len(structs))
+	for i, v := range structs {
+		ptr := new(T)
+		*ptr = v
+		pointers[i] = ptr
+	}
+	return pointers
+}
+
+// The inverse of ToPtrSlice.
+// Useful when you're doing some type gymnastics.
+// Not used internally but, seems only correct to supply the inverse.
+func ToStructSlice[T any](ptrs []*T) []T {
+	pointers := make([]T, len(ptrs))
+	for i, v := range ptrs {
+		pointers[i] = *v
+	}
+	return pointers
+}
+
+// A utility function that extracts all values from a map[K]T.
+// Useful when you need to iterate over items in a map that is synchronized buy a Mutex.
+// Used internally but exposed for your consumption.
+func MapValuesToSlice[K comparable, T any](m map[K]T) []T {
+	slice := make([]T, 0, len(m))
+	for _, v := range m {
+		slice = append(slice, v)
+	}
+	return slice
+}
+
+// A utility function that extracts all keys from a map[K]T.
+// Useful when you need to iterate over keys in a map that is synchronized buy a Mutex.
+// Used internally but exposed for your consumption.
+func MapKeysToSlice[K comparable, T any](m map[K]T) []K {
+	slice := make([]K, 0, len(m))
+	for k := range m {
+		slice = append(slice, k)
+	}
+	return slice
+}
+
+// Noescape hides a pointer from escape analysis.  noescape is
+// the identity function but escape analysis doesn't think the
+// output depends on the input.
+// USE CAREFULLY!
+//
+//go:nosplit
+func Noescape(p unsafe.Pointer) unsafe.Pointer {
+	x := uintptr(unsafe.Pointer(p))
+	return unsafe.Pointer(x ^ 0)
+}
