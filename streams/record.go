@@ -27,7 +27,7 @@ import (
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
-// The record.Header key that gstreams uses to transmit type information about an IncomingRecord or a ChangeLogEntry.
+// The record.Header key that GKES uses to transmit type information about an IncomingRecord or a ChangeLogEntry.
 const RecordTypeHeaderKey = "__grt__" // let's keep it small. every byte counts
 
 const AutoAssign = int32(-1)
@@ -101,7 +101,7 @@ func (r IncomingRecord) Value() []byte {
 }
 
 func (r IncomingRecord) isMarkerRecord() bool {
-	return len(r.kRecord.Headers) == 1 && r.kRecord.Headers[0].Key == "__gstreams__mark"
+	return len(r.kRecord.Headers) == 1 && r.kRecord.Headers[0].Key == "gkes__mark"
 }
 
 func (r *Record) Offset() int64 {

@@ -26,7 +26,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-var markKey = []byte("__gstreams__mark")
+var markKey = []byte("gkes__mark")
 var placeholder = []byte{1}
 
 type ChangeAttributes map[string][]byte
@@ -180,7 +180,7 @@ func (clgc *changeLogGroupConsumer[T]) populate(c chan []*kgo.Record, receiver *
 				} else if bytes.Equal(record.Value, clgc.activeMark) {
 					clgc.activeWaiters[record.Partition].Done()
 				}
-			} else if len(record.Headers) == 1 && record.Headers[0].Key == "__gstreams__watermark" {
+			} else if len(record.Headers) == 1 && record.Headers[0].Key == "gkes__watermark" {
 				tp := TopicPartition{
 					Partition: record.Partition,
 					Topic:     string(record.Headers[0].Value),
@@ -208,7 +208,7 @@ func sendMarkerMessage(producer *kgo.Client, tp TopicPartition, mark []byte, wg 
 	record := kgo.KeySliceRecord(markKey, mark)
 	record.Topic = tp.Topic
 	record.Partition = tp.Partition
-	record.Headers = append(record.Headers, kgo.RecordHeader{Key: "__gstreams__mark", Value: placeholder})
+	record.Headers = append(record.Headers, kgo.RecordHeader{Key: "gkes__mark", Value: placeholder})
 	log.Debugf("Sending marker message to: %+v", tp)
 	producer.Produce(context.Background(), record, func(r *kgo.Record, err error) {
 		wg.Done()
@@ -216,5 +216,5 @@ func sendMarkerMessage(producer *kgo.Client, tp TopicPartition, mark []byte, wg 
 }
 
 func isMarkerRecord(record *kgo.Record) bool {
-	return len(record.Headers) == 1 && record.Headers[0].Key == "__gstreams__mark"
+	return len(record.Headers) == 1 && record.Headers[0].Key == "gkes__mark"
 }

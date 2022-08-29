@@ -45,12 +45,15 @@ func (ec *EventContext[T]) IsInterjection() bool {
 	return ec.isInterjection
 }
 
-// The offset for this event, currently 0 for an Interjection
+// The offset for this event, -1 for an Interjection
 func (ec *EventContext[T]) Offset() int64 {
+	if ec.isInterjection {
+		return -1
+	}
 	return ec.input.Offset()
 }
 
-// The TopicParition for this event. It is present fpr both normal events ans Interjections
+// The TopicParition for this event. It is present for both normal events and Interjections
 func (ec *EventContext[T]) TopicPartition() TopicPartition {
 	return ec.topicPartition
 }

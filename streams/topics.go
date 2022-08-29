@@ -121,11 +121,11 @@ func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 }
 
 func (s Source) CommitLogTopicNameForGroupId() string {
-	return fmt.Sprintf("__gstreams_commit_log_%s", s.GroupId)
+	return fmt.Sprintf("gkes_commit_log_%s", s.GroupId)
 }
 
 func (s Source) ChangeLogTopicName() string {
-	return fmt.Sprintf("__gstreams_change_log_%s_%s", s.Topic, s.GroupId)
+	return fmt.Sprintf("gkes_change_log_%s_%s", s.Topic, s.GroupId)
 }
 
 // Returns Source.StateCluster if defined, otherwise Source.Cluster

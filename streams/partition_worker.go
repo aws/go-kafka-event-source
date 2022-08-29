@@ -24,10 +24,17 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+// Returned by an EventProcessor or Interjector in response to an EventContext. ExecutionState
+// should not be conflated with concepts of error state, such as Success or Failure.
 type ExecutionState int
 
 const (
-	Complete    ExecutionState = 0
+	// Complete signals the EventSource that the event or interjection is completely processed.
+	// Once Complete is returned, the offset for the associated EventContext will be commited.
+	Complete ExecutionState = 0
+	// Incomplete signals the EventSource that the event or interjection is still ongoing, and
+	// that your application promises to fulfill the EventContext in the future.
+	// The offset for the associated EventContext will not be commited.
 	Incomplete  ExecutionState = 1
 	unknownType ExecutionState = 2
 )
@@ -48,7 +55,6 @@ type partitionWorker[T StateStore] struct {
 	processed           int64
 	highestOffset       int64
 	topicPartition      TopicPartition
-	// leaderEpoch int32
 }
 
 func newPartitionWorker[T StateStore](
@@ -215,7 +221,6 @@ func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
 
 	atomic.AddInt64(&pw.pending, -1)
 	pw.forwardToEventSource(ec)
-	// pw.handler.handleEvent(pw.ctx, ec, pw.eosProducer)
 	pw.highestOffset = offset
 	atomic.AddInt64(&pw.processed, 1)
 	return true

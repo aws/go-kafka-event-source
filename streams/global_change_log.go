@@ -23,7 +23,7 @@ import (
 
 // A GlobalChangeLog is simply a consumer which continously consumes all partitions within the given topic and
 // forwards all records to it's StateStore. GlobalChangeLogs can be useful for sharing small amounts of data between
-// a group of hosts. For example, gstreams uses a global change log to keep track of consumer group offsets.
+// a group of hosts. For example, GKES uses a global change log to keep track of consumer group offsets.
 type GlobalChangeLog struct {
 	receiver StateStore
 	client   *kgo.Client

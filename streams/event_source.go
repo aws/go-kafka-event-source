@@ -147,13 +147,13 @@ type IncomingRecordDecoder[V any] func(IncomingRecord) V
 type EventProcessor[T any, V any] func(*EventContext[T], V) (ExecutionState, error)
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
-func RegisterEventType[T StateStore, V any](ec *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
+func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
 	ep := newEventProcessor(eventType, transformer, eventProcessor)
-	if ec.root == nil {
-		ec.root, ec.tail = ep, ep
+	if es.root == nil {
+		es.root, es.tail = ep, ep
 	} else {
-		ec.tail.next = ep
-		ec.tail = ep
+		es.tail.next = ep
+		es.tail = ep
 	}
 }
 
