@@ -22,7 +22,7 @@
 	Scheduler will call the `processor` callback defined at initialization.
 	The output of this call will be passed to the `receiver` callback if present
 */
-package async
+package streams
 
 import (
 	"context"
