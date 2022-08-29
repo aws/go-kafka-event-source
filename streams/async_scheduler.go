@@ -32,6 +32,24 @@ import (
 	"sync/atomic"
 )
 
+type asyncJobContainer[S StateStore, K comparable, V any] struct {
+	eventContext *EventContext[S]
+	finalizer    AsyncJobFinalizer[S, K, V]
+	key          K
+	value        V
+	err          error
+}
+
+func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() (ExecutionState, error) {
+	return ajc.finalizer(ajc.eventContext, ajc.key, ajc.value, ajc.err)
+}
+
+// A handler invoked when a previously scheduled AsyncJob should be performed.
+type AsyncJobProcessor[K comparable, V any] func(K, V) error
+
+// A callback invoked when a previously scheduled AsyncJob has been completed.
+type AsyncJobFinalizer[T StateStore, K comparable, V any] func(*EventContext[T], K, V, error) (ExecutionState, error)
+
 type openStatus struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -69,38 +87,21 @@ const (
 	Deferred
 )
 
-type Key interface {
-	comparable
-}
-
-type Schedulable[K Key] interface {
-	Key() K
-	Ctx() context.Context
-}
-
-type Receiver[T any] interface {
-	Receive(T)
-}
-
-type Processor[K comparable, T Schedulable[K], R any] func(T) R
-type finalizer[R any] func(R)
-
-type worker[K comparable, T Schedulable[K], R any] struct {
+type worker[S StateStore, K comparable, V any] struct {
 	capacity  int
-	workQueue *asyncItemQueue[T]
-	processor Processor[K, T, R]
-	finalizer finalizer[R]
+	workQueue *asyncItemQueue[asyncJobContainer[S, K, V]]
+	processor AsyncJobProcessor[K, V]
 	depth     int64
 	ctx       context.Context
 	key       K
 	no_key    K
 }
 
-func (w *worker[K, T, R]) reset() {
+func (w *worker[S, K, V]) reset() {
 	w.key = w.no_key
 }
 
-func (w *worker[K, T, R]) tryAddItem(item T) bool {
+func (w *worker[S, K, V]) tryAddItem(item asyncJobContainer[S, K, V]) bool {
 	if w.workQueue.tryEnqueue(item) {
 		atomic.AddInt64(&w.depth, 1)
 		return true
@@ -108,7 +109,7 @@ func (w *worker[K, T, R]) tryAddItem(item T) bool {
 	return false
 }
 
-func (w *worker[K, T, R]) blockingAddItem(item T) {
+func (w *worker[S, K, V]) blockingAddItem(item asyncJobContainer[S, K, V]) {
 	select {
 	case w.workQueue.enqueueChannel() <- item:
 		atomic.AddInt64(&w.depth, 1)
@@ -116,16 +117,16 @@ func (w *worker[K, T, R]) blockingAddItem(item T) {
 	}
 }
 
-func (w *worker[K, T, R]) dequeue() {
+func (w *worker[S, K, V]) dequeue() {
 	w.workQueue.dequeue()
 	atomic.AddInt64(&w.depth, -1)
 }
 
-func (w *worker[K, T, R]) advance() {
+func (w *worker[S, K, V]) advance() {
 	w.dequeue()
 }
 
-func (w *worker[K, T, R]) process() {
+func (w *worker[S, K, V]) process() {
 
 	if w.ctx.Err() != nil {
 		return
@@ -136,24 +137,24 @@ func (w *worker[K, T, R]) process() {
 	}
 	//Err() will return non-nil if the context has been canceled
 	//this will be logged by the consumer, so let's not crowd the logs with more
-	itemCtx := item.Ctx()
+	itemCtx := item.eventContext.Ctx()
 	if itemCtx != nil && itemCtx.Err() != nil {
 		w.advance()
 		// continue
 	}
 
-	val := w.processor(item)
+	item.err = w.processor(item.key, item.value)
 	w.advance()
-	w.finalizer(val)
+	item.eventContext.AsyncJobComplete(item.invokeFinalizer)
 }
 
-type AsyncScheduler[K comparable, T Schedulable[K], R any] struct {
+type AsyncJobScheduler[S StateStore, K comparable, V any] struct {
 	openStatus        openStatus
-	processor         Processor[K, T, R]
-	receiver          Receiver[R]
+	processor         AsyncJobProcessor[K, V]
+	finalizer         AsyncJobFinalizer[S, K, V]
 	workerFreeSignal  chan struct{}
-	workerMap         map[K]*worker[K, T, R]
-	workerChannel     chan *worker[K, T, R] // functions as a blocking queue
+	workerMap         map[K]*worker[S, K, V]
+	workerChannel     chan *worker[S, K, V] // functions as a blocking queue
 	workerQueueDepth  int64
 	maxConcurrentKeys int
 	mux               sync.Mutex
@@ -205,21 +206,11 @@ var WideNetworkConfig = Config{
 	MaxConcurrentKeys: 10000,
 }
 
-func NewAsyncProcessor[K comparable, T Schedulable[K], R any](
+func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	ctx context.Context,
-	processor Processor[K, T, R],
-	config Config) *AsyncScheduler[K, T, R] {
-	ap, err := CreateAsyncProcessor(ctx, processor, config)
-	if err != nil {
-		panic(err)
-	}
-	return ap
-}
-
-func CreateAsyncProcessor[K comparable, T Schedulable[K], R any](
-	ctx context.Context,
-	processor Processor[K, T, R],
-	config Config) (*AsyncScheduler[K, T, R], error) {
+	processor AsyncJobProcessor[K, V],
+	finalizer AsyncJobFinalizer[S, K, V],
+	config Config) (*AsyncJobScheduler[S, K, V], error) {
 
 	if config.WorkerQueueDepth < 0 {
 		return nil, errors.New("workerQueueDepth must be >= 0")
@@ -229,13 +220,14 @@ func CreateAsyncProcessor[K comparable, T Schedulable[K], R any](
 	}
 
 	maxConcurrentKeys := config.concurrentKeys()
-	ap := &AsyncScheduler[K, T, R]{
+	ap := &AsyncJobScheduler[S, K, V]{
 		openStatus:        newOpenStatus(ctx),
 		processor:         processor,
+		finalizer:         finalizer,
 		workerQueueDepth:  int64(config.WorkerQueueDepth),
 		workerFreeSignal:  make(chan struct{}, 1),
-		workerMap:         make(map[K]*worker[K, T, R], maxConcurrentKeys),
-		workerChannel:     make(chan *worker[K, T, R], maxConcurrentKeys+1),
+		workerMap:         make(map[K]*worker[S, K, V], maxConcurrentKeys),
+		workerChannel:     make(chan *worker[S, K, V], maxConcurrentKeys+1),
 		maxConcurrentKeys: maxConcurrentKeys,
 	}
 
@@ -250,64 +242,51 @@ func CreateAsyncProcessor[K comparable, T Schedulable[K], R any](
 	return ap, nil
 }
 
-func (ap *AsyncScheduler[K, T, R]) Receive(item T, wr WorkResult) {
-	if wr == Success {
-		ap.Schedule(item)
-	}
-	// TODO: bubble up error
-}
-
-func (ap *AsyncScheduler[K, T, R]) forward(item R) {
-	if ap.receiver != nil {
-		ap.receiver.Receive(item)
-	}
-}
-
-func (ap *AsyncScheduler[K, T, R]) SetReceiver(r Receiver[R]) {
-	ap.receiver = r
-}
-
-func (ap *AsyncScheduler[K, T, R]) isClosed() bool {
+func (ap *AsyncJobScheduler[S, K, V]) isClosed() bool {
 	return !ap.openStatus.isOpen()
 }
 
-func (ap *AsyncScheduler[K, T, R]) Close() {
-	// atomic.StoreUint32(&s.running, 0)
+func (ap *AsyncJobScheduler[S, K, V]) Close() {
 	ap.openStatus.close()
 	close(ap.workerFreeSignal)
 	close(ap.workerChannel)
 }
 
-func (ap *AsyncScheduler[K, T, R]) queueDepth() int64 {
+func (ap *AsyncJobScheduler[S, K, V]) queueDepth() int64 {
 	return atomic.LoadInt64(&ap.workerQueueDepth)
 }
 
-func (ap *AsyncScheduler[K, T, R]) newQueue() interface{} {
+func (ap *AsyncJobScheduler[S, K, V]) newQueue() interface{} {
 	qd := int(ap.queueDepth())
-	return &worker[K, T, R]{
+	return &worker[S, K, V]{
 		capacity:  qd,
-		workQueue: newAsyncItemQueue[T](qd),
+		workQueue: newAsyncItemQueue[asyncJobContainer[S, K, V]](qd),
 		processor: ap.processor,
-		finalizer: ap.forward,
 		ctx:       ap.openStatus.context(),
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) Schedule(item T) error {
+func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value V) (ExecutionState, error) {
 	if ap.isClosed() {
-		return errors.New("SchedulerClosedError")
+		return Complete, errors.New("SchedulerClosedError")
 	}
-	ap.scheduleItem(item)
-	return nil
+	ap.scheduleItem(asyncJobContainer[S, K, V]{
+		eventContext: ec,
+		finalizer:    ap.finalizer,
+		key:          key,
+		value:        value,
+		err:          nil,
+	})
+	return Complete, nil
 }
 
-func (ap *AsyncScheduler[K, T, R]) scheduleItem(item T) {
-	var w *worker[K, T, R] = nil
+func (ap *AsyncJobScheduler[S, K, V]) scheduleItem(item asyncJobContainer[S, K, V]) {
+	var w *worker[S, K, V] = nil
 	var created bool
 	added := false
 	for w == nil {
 		ap.mux.Lock()
-		w, created = ap.grabWorker(item.Key())
+		w, created = ap.grabWorker(item.key)
 		if w == nil {
 			ap.mux.Unlock()
 			// wait until a worker thread finshes processing and try again
@@ -334,7 +313,7 @@ func (ap *AsyncScheduler[K, T, R]) scheduleItem(item T) {
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) work() {
+func (ap *AsyncJobScheduler[S, K, V]) work() {
 	for {
 		if ap.isClosed() {
 			return
@@ -346,11 +325,11 @@ func (ap *AsyncScheduler[K, T, R]) work() {
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) nextWorker() *worker[K, T, R] {
+func (ap *AsyncJobScheduler[S, K, V]) nextWorker() *worker[S, K, V] {
 	return <-ap.workerChannel
 }
 
-func (ap *AsyncScheduler[K, T, R]) SetWorkerQueueDepth(size int) {
+func (ap *AsyncJobScheduler[S, K, V]) SetWorkerQueueDepth(size int) {
 	atomic.StoreInt64(&ap.workerQueueDepth, int64(size))
 }
 
@@ -358,7 +337,7 @@ func (ap *AsyncScheduler[K, T, R]) SetWorkerQueueDepth(size int) {
 note: this does not increase the number of go-routines processiung work,
 only the max number of keys we will accept work for before we block the incoming data stream
 */
-func (ap *AsyncScheduler[K, T, R]) SetMaxConcurrentKeys(size int) {
+func (ap *AsyncJobScheduler[S, K, V]) SetMaxConcurrentKeys(size int) {
 	// prevent any action on workerChannel until this operation is complete
 	ap.updateRWLock.Lock()
 	defer ap.updateRWLock.Unlock()
@@ -372,7 +351,7 @@ func (ap *AsyncScheduler[K, T, R]) SetMaxConcurrentKeys(size int) {
 	ap.ensureWorkerChannelCapacity(size, prevMaxKeys)
 }
 
-func (ap *AsyncScheduler[K, T, R]) ensureWorkerChannelCapacity(newSize, oldSize int) {
+func (ap *AsyncJobScheduler[S, K, V]) ensureWorkerChannelCapacity(newSize, oldSize int) {
 	if newSize > oldSize {
 		/*
 			we need to make sure s.workerChannel capacity is > s.maxConcurrentKeys
@@ -381,7 +360,7 @@ func (ap *AsyncScheduler[K, T, R]) ensureWorkerChannelCapacity(newSize, oldSize 
 
 			In short, this channel needs to be able to fold at least s.maxConcurrentKeys at any given time
 		*/
-		wc := make(chan *worker[K, T, R], newSize+1)
+		wc := make(chan *worker[S, K, V], newSize+1)
 		// transfer any pending workers to the new channel
 		oldChan := ap.workerChannel
 	pending:
@@ -399,11 +378,11 @@ func (ap *AsyncScheduler[K, T, R]) ensureWorkerChannelCapacity(newSize, oldSize 
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) waitForWorker() {
+func (ap *AsyncJobScheduler[S, K, V]) waitForWorker() {
 	<-ap.workerFreeSignal
 }
 
-func (ap *AsyncScheduler[K, T, R]) workerAvailable() {
+func (ap *AsyncJobScheduler[S, K, V]) workerAvailable() {
 	if ap.isClosed() {
 		return
 	}
@@ -413,7 +392,7 @@ func (ap *AsyncScheduler[K, T, R]) workerAvailable() {
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) enqueueWorker(w *worker[K, T, R]) {
+func (ap *AsyncJobScheduler[S, K, V]) enqueueWorker(w *worker[S, K, V]) {
 	if ap.isClosed() {
 		return
 	}
@@ -422,15 +401,15 @@ func (ap *AsyncScheduler[K, T, R]) enqueueWorker(w *worker[K, T, R]) {
 	ap.updateRWLock.RUnlock()
 }
 
-func (ap *AsyncScheduler[K, T, R]) warmup() {
+func (ap *AsyncJobScheduler[S, K, V]) warmup() {
 	for i := 0; i < ap.maxConcurrentKeys; i++ {
-		w := ap.workerPool.Get().(*worker[K, T, R])
+		w := ap.workerPool.Get().(*worker[S, K, V])
 		w.reset()
 		ap.workerPool.Put(w)
 	}
 }
 
-func (ap *AsyncScheduler[K, T, R]) releaseWorker(w *worker[K, T, R]) {
+func (ap *AsyncJobScheduler[S, K, V]) releaseWorker(w *worker[S, K, V]) {
 	if ap.isClosed() {
 		return
 	}
@@ -447,16 +426,16 @@ func (ap *AsyncScheduler[K, T, R]) releaseWorker(w *worker[K, T, R]) {
 	ap.enqueueWorker(w)
 }
 
-func (ap *AsyncScheduler[K, T, R]) grabWorker(key K) (*worker[K, T, R], bool) {
-	var w *worker[K, T, R]
+func (ap *AsyncJobScheduler[S, K, V]) grabWorker(key K) (*worker[S, K, V], bool) {
+	var w *worker[S, K, V]
 	var ok bool
 	if w, ok = ap.workerMap[key]; !ok {
 		if len(ap.workerMap) >= ap.maxConcurrentKeys {
 			return nil, false
 		}
-		for w = ap.workerPool.Get().(*worker[K, T, R]); w.capacity != int(ap.queueDepth()); {
+		for w = ap.workerPool.Get().(*worker[S, K, V]); w.capacity != int(ap.queueDepth()); {
 			// we've updated the workerQueueDepth, exhaust the pool until we create a new one
-			w = ap.workerPool.Get().(*worker[K, T, R])
+			w = ap.workerPool.Get().(*worker[S, K, V])
 		}
 		w.key = key
 		ap.workerMap[key] = w

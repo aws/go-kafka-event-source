@@ -134,11 +134,11 @@ func (b *produceBatcher[T]) cleanup() {
 func (b *produceBatcher[T]) recordComplete(record *kgo.Record, err error) {
 	b.errs = append(b.errs, err)
 	if atomic.AddInt64(&b.pending, -1) == 0 && b.callback != nil {
-		b.ctx.asyncComplete(b.executeCallback)
+		b.ctx.AsyncJobComplete(b.executeCallback)
 	}
 }
 
-func (b *produceBatcher[T]) executeCallback(tp TopicPartition) (ExecutionState, error) {
+func (b *produceBatcher[T]) executeCallback() (ExecutionState, error) {
 	state, err := b.callback(b.ctx, b.records, b.errs)
 	b.cleanup()
 	return state, err

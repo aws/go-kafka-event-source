@@ -147,7 +147,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 				pw.handleEvent(newEventContext(pw.ctx, record, pw.changeLog.changeLogData(), pw))
 			}
 		case job := <-pw.asyncCompleter.asyncJobs:
-			if state, _ := job.finalize(pw.topicPartition); state == Complete {
+			if state, _ := job.finalize(); state == Complete {
 				job.ctx.complete()
 			}
 			select {
@@ -174,7 +174,7 @@ type asyncCompleter[T any] struct {
 
 type asyncJob[T any] struct {
 	ctx      *EventContext[T]
-	finalize func(TopicPartition) (ExecutionState, error)
+	finalize func() (ExecutionState, error)
 }
 
 func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {

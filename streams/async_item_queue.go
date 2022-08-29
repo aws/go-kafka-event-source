@@ -35,10 +35,10 @@ const minWorkItemQueueSize = 2
 
 	`done()` reports true if head and channel are empty and there are no pending writes to the channel
 
-	see processor.go notes as to why we have a tryEnqueue and resumeEnqueue call
+	see async_scheduler.go notes as to why we have a tryEnqueue and resumeEnqueue call
 */
 type asyncItemQueue[T any] struct {
-	size     int32 // to implement trylock, which go does not provide
+	size     int32
 	queue    chan T
 	headLock sync.Mutex
 	head     T

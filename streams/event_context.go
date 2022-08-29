@@ -95,7 +95,11 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 	}
 }
 
-func (ec *EventContext[T]) asyncComplete(finalize func(TopicPartition) (ExecutionState, error)) {
+// AsyncJobComplete should be called when an async event processor has performed it's function.
+// the finalize cunction should return Complete if there are no other pending asynchronous jobs for the event context in question,
+// regardless of error state. `finalize` does no accpt any arguments, so you're callback should encapsulate
+// any pertinent data needed for processing.
+func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, error)) {
 	ec.asynCompleter.asyncComplete(asyncJob[T]{
 		ctx:      ec,
 		finalize: finalize,
