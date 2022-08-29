@@ -14,7 +14,12 @@
 
 package streams
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/aws/go-kafka-event-source/streams/sak"
+)
 
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
@@ -26,6 +31,7 @@ type EventSource[T StateStore] struct {
 	consumer          *eventSourceConsumer[T]
 	interjections     []interjection[T]
 	source            Source
+	runStatus         sak.RunStatus
 	done              chan struct{}
 }
 
@@ -36,6 +42,7 @@ func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFac
 		defaultProcessor:  defaultProcessor,
 		stateStoreFactory: stateStoreFactory,
 		source:            source,
+		runStatus:         sak.NewRunStatus(context.Background()),
 		done:              make(chan struct{}, 1),
 	}
 	var err error
@@ -53,6 +60,7 @@ func (es *EventSource[T]) ConsumeEvents() {
 func (es *EventSource[T]) Stop() {
 	go func() {
 		<-es.consumer.leave()
+		es.runStatus.Halt()
 		select {
 		case es.done <- struct{}{}:
 		default:
@@ -81,12 +89,12 @@ plus or minues a random time.Duration not greater than the absolute value of `ji
 `interjector` will have access to EventContext.Store() and can create/delete store items, or forward events
 just as a standard EventProcessor. Example:
 
- func cleanupStaleItems(ec *EventContext[myStateStore], when time.Time)  streams.ExecutionState {
-	ec.Store().cleanup(when)
-	return ec.Complete
- }
- // schedules cleanupStaleItems to be executed every 900ms - 1100ms
- eventSource.ScheduleInterjection(cleanupStaleItems, time.Second, 100 * time.Millisecond)
+	 func cleanupStaleItems(ec *EventContext[myStateStore], when time.Time)  streams.ExecutionState {
+		ec.Store().cleanup(when)
+		return ec.Complete
+	 }
+	 // schedules cleanupStaleItems to be executed every 900ms - 1100ms
+	 eventSource.ScheduleInterjection(cleanupStaleItems, time.Second, 100 * time.Millisecond)
 */
 func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every, jitter time.Duration) {
 	es.interjections = append(es.interjections, interjection[T]{
@@ -96,7 +104,7 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 	})
 }
 
-// Executes `cmd` in the context of the given TopicPartition. `callback`` is an optional, and will be excuted once the interjection is complete if non-nil.
+// Executes `cmd` in the context of the given TopicPartition. `callback“ is an optional, and will be excuted once the interjection is complete if non-nil.
 // `callback` is used interally to make EachChangeLogPartition() a blocking call. It may or may not be useful depending on you use case.
 func (es *EventSource[T]) Interject(tp TopicPartition, cmd Interjector[T], callback func()) {
 	es.consumer.interject(tp, cmd, callback)
@@ -108,13 +116,13 @@ without create an individual timer per partition.
 The uquivalent of calling Interject() on each active partition, blocking on each iteration until the Interjection can be processed.
 Useful for gathering store statistics, but can be used in place of a standard Interjection. Example:
 
- itemCount := 0
- eventSource.EachChangeLogPartition(func (ec *EventContext[myStateStore], when time.Time) streams.ExecutionState {
-	store := ec.Store()
-	itemCount += stor.Len()
-	return streams.Complete
- })
- fmt.Println("Number of items: ", itemCount)
+	 itemCount := 0
+	 eventSource.EachChangeLogPartition(func (ec *EventContext[myStateStore], when time.Time) streams.ExecutionState {
+		store := ec.Store()
+		itemCount += stor.Len()
+		return streams.Complete
+	 })
+	 fmt.Println("Number of items: ", itemCount)
 */
 func (es *EventSource[T]) EachChangeLogPartition(interjector Interjector[T]) {
 	es.consumer.forEachChangeLogPartition(interjector)

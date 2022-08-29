@@ -52,7 +52,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,
-		ctx:              context.Background(),
+		ctx:              eventSource.runStatus.Ctx(),
 		workers:          make(map[TopicPartition]*partitionWorker[T]),
 		prepping:         make(map[TopicPartition]*partitionPrepper[T]),
 		eventSource:      eventSource,

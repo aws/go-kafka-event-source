@@ -179,7 +179,7 @@ func (r *Record) ToKafkaRecord() *kgo.Record {
 	return (*kgo.Record)(sak.Noescape(unsafe.Pointer(&r.kRecord)))
 }
 
-// A convenince method provided in case you are working with a raw kgo producer
+// A convenience function provided in case you are working with a raw kgo producer
 // and want to integrate with streams. This will ensure that the EventSource will route the record to the proper handler
 // without falling back to the defaultHandler
 func SetRecordType(r *kgo.Record, recordType string) {

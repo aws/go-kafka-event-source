@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/aws/go-kafka-event-source/streams"
 	"github.com/aws/go-kafka-event-source/streams/codec"
@@ -30,11 +31,18 @@ type Contact struct {
 	Email       string
 	FirstName   string
 	LastName    string
+	LastContact time.Time
 }
 
 type NotifyContactEvent struct {
 	ContactId        string
 	NotificationType string
+}
+
+type EmailNotification struct {
+	ContactId string
+	Address   string
+	Payload   string
 }
 
 func (c Contact) Key() string {
@@ -82,21 +90,59 @@ func NewContactStore(tp streams.TopicPartition) ContactStore {
 	return ContactStore{stores.NewSimpleStore[Contact](tp)}
 }
 
-var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
-var source = streams.Source{
-	GroupId:       "ContactsExampleGroup",
-	Topic:         "ContactsExample",
-	NumPartitions: 10,
-	SourceCluster: contactsCluster,
+var notificationScheduler *streams.AsyncJobScheduler[ContactStore, string, EmailNotification]
+
+func notifyContactAsync(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) (streams.ExecutionState, error) {
+	contactStore := ctx.Store()
+	defer wg.Done()
+
+	if contact, ok := contactStore.Get(notification.ContactId); ok {
+		fmt.Printf("Notifying contact: %s asynchronously by %s\n", contact.Id, notification.NotificationType)
+		return notificationScheduler.Schedule(ctx, contact.Email, EmailNotification{
+			ContactId: contact.Id,
+			Address:   contact.Email,
+			Payload:   "sending you mail...from a computer!",
+		})
+	} else {
+		fmt.Printf("Contact %s does not exist!\n", notification.ContactId)
+	}
+	return streams.Complete, nil
 }
 
-var destination = streams.Destination{
-	Cluster:      source.SourceCluster,
-	DefaultTopic: source.Topic,
+func sendEmailToContact(key string, notification EmailNotification) error {
+	// note: the AsyncJobProcessor does not have access to the StateStore
+	fmt.Printf("Processing an email job with key: '%s'. This may take some time, emails are tricky!\n", key)
+	time.Sleep(500 * time.Millisecond) // simulating how long it might to send an email
+	return nil
+}
+
+func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, email EmailNotification, err error) (streams.ExecutionState, error) {
+	// the AsyncJobFinalizer has access to the StateStore associated with this event
+	contactStore := ctx.Store()
+	if contact, ok := contactStore.Get(email.ContactId); ok {
+		fmt.Printf("Notified contact: %s, address: %s, payload: '%s'\n", contact.Id, email.Address, email.Payload)
+		contact.LastContact = time.Now()
+		contactStore.Put(contact)
+	}
+	wg.Done()
+	return streams.Complete, err
 }
 
 func ExampleEventSource() {
 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
+
+	var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
+	var source = streams.Source{
+		GroupId:       "ExampleEventSourceGroup",
+		Topic:         "ExampleEventSource",
+		NumPartitions: 10,
+		SourceCluster: contactsCluster,
+	}
+
+	var destination = streams.Destination{
+		Cluster:      source.SourceCluster,
+		DefaultTopic: source.Topic,
+	}
 
 	source, err := streams.CreateSource(source)
 	if err != nil {
@@ -112,9 +158,8 @@ func ExampleEventSource() {
 	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[Contact], deleteContact, "DeleteContact")
 	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[NotifyContactEvent], notifyContact, "NotifyContact")
 
-	eventSource.ConsumeEvents()
-
 	wg.Add(4) // we're expecting 4 records in this example
+	eventSource.ConsumeEvents()
 
 	contact := Contact{
 		Id:          "123",
@@ -154,4 +199,77 @@ func ExampleEventSource() {
 	// Notifying contact: 123 by email
 	// Deleted contact: 123
 	// Contact 123 does not exist!
+}
+
+func ExampleAsyncJobScheduler() {
+	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
+
+	var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
+	var source = streams.Source{
+		GroupId:       "ExampleAsyncJobSchedulerGroup",
+		Topic:         "ExampleAsyncJobScheduler",
+		NumPartitions: 10,
+		SourceCluster: contactsCluster,
+	}
+
+	var destination = streams.Destination{
+		Cluster:      source.SourceCluster,
+		DefaultTopic: source.Topic,
+	}
+
+	source, err := streams.CreateSource(source)
+	if err != nil {
+		panic(err)
+	}
+
+	eventSource, err := streams.NewEventSource(source, NewContactStore, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[Contact], createContact, "CreateContact")
+	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[NotifyContactEvent], notifyContactAsync, "NotifyContact")
+
+	notificationScheduler, err = streams.CreateAsyncJobScheduler(eventSource,
+		sendEmailToContact, emailToContactComplete, streams.DefaultConfig)
+	if err != nil {
+		panic(err)
+	}
+	wg.Add(3) // we're expecting 3 records in this example
+	eventSource.ConsumeEvents()
+
+	contact := Contact{
+		Id:          "123",
+		Email:       "billy@bob.com",
+		PhoneNumber: "+18005551212",
+		FirstName:   "Billy",
+		LastName:    "Bob",
+	}
+
+	notification := NotifyContactEvent{
+		ContactId:        "123",
+		NotificationType: "email",
+	}
+
+	producer := streams.NewProducer(destination)
+
+	createContactRecord := codec.JsonItemEncoder("CreateContact", contact)
+	createContactRecord.WriteKeyString(contact.Id)
+
+	notificationRecord := codec.JsonItemEncoder("NotifyContact", notification)
+	notificationRecord.WriteKeyString(notification.ContactId)
+
+	producer.Produce(context.Background(), createContactRecord)
+	producer.Produce(context.Background(), notificationRecord)
+
+	wg.Wait()
+	eventSource.Stop()
+	<-eventSource.Done()
+	// cleaning up our local Kafka cluster
+	// you probably don't want to delete your topic
+	streams.DeleteSource(source)
+	// Output: Created contact: 123
+	// Notifying contact: 123 asynchronously by email
+	// Processing an email job with key: 'billy@bob.com'. This may take some time, emails are tricky!
+	// Notified contact: 123, address: billy@bob.com, payload: 'sending you mail...from a computer!'
 }

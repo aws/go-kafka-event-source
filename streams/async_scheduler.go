@@ -12,16 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/*
-	The async package provides a generic work scheduler/job serializer (AsyncProcessor) which takes a key/value as input via Schedule.
-	All work is organized into queues by 'key'. So for a given key, all work is serial allowing the use of
-	the single writer principle in an asynchronous fashion. In practice, it divides a stream partition into
-	it's individual keys and processes the keys in parallel.
-
-	After the the scheduling is complete for a key/value,
-	Scheduler will call the `processor` callback defined at initialization.
-	The output of this call will be passed to the `receiver` callback if present
-*/
 package streams
 
 import (
@@ -30,6 +20,8 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+
+	"github.com/aws/go-kafka-event-source/streams/sak"
 )
 
 type asyncJobContainer[S StateStore, K comparable, V any] struct {
@@ -49,43 +41,6 @@ type AsyncJobProcessor[K comparable, V any] func(K, V) error
 
 // A callback invoked when a previously scheduled AsyncJob has been completed.
 type AsyncJobFinalizer[T StateStore, K comparable, V any] func(*EventContext[T], K, V, error) (ExecutionState, error)
-
-type openStatus struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-func newOpenStatus(parent context.Context) openStatus {
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithCancel(parent)
-	return openStatus{ctx, cancel}
-}
-
-func (os openStatus) context() context.Context {
-	return os.ctx
-}
-
-func (os openStatus) isOpen() bool {
-	return os.ctx.Err() == nil
-}
-
-func (os openStatus) close() {
-	os.cancel()
-}
-
-type WorkResult int
-
-const (
-	None WorkResult = iota
-	Success
-	ErrorRetry
-	ErrorEjectEvent
-	ErrorEjectKey
-	ErrorConsumerClosed
-	Deferred
-)
 
 type worker[S StateStore, K comparable, V any] struct {
 	capacity  int
@@ -148,8 +103,18 @@ func (w *worker[S, K, V]) process() {
 	item.eventContext.AsyncJobComplete(item.invokeFinalizer)
 }
 
+/*
+The AsyncJobScheduler provides a generic work scheduler/job serializer which takes a key/value as input via Schedule.
+All work is organized into queues by 'key'. So for a given key, all work is serial allowing the use of
+the single writer principle in an asynchronous fashion. In practice, it divides a stream partition into
+it's individual keys and processes the keys in parallel.
+
+After the the scheduling is complete for a key/value,
+Scheduler will call the `processor` callback defined at initialization.
+The output of this call will be passed to the `receiver` callback if present
+*/
 type AsyncJobScheduler[S StateStore, K comparable, V any] struct {
-	openStatus        openStatus
+	runStatus         sak.RunStatus
 	processor         AsyncJobProcessor[K, V]
 	finalizer         AsyncJobFinalizer[S, K, V]
 	workerFreeSignal  chan struct{}
@@ -173,8 +138,6 @@ func (c Config) concurrentKeys() int {
 	}
 	return c.MaxConcurrentKeys
 }
-
-// const DefaultSlowAddThreshold = 500 * time.Millisecond
 
 var DefaultConfig = Config{
 	Concurrency:       runtime.NumCPU(),
@@ -207,7 +170,7 @@ var WideNetworkConfig = Config{
 }
 
 func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
-	ctx context.Context,
+	eventSource *EventSource[S],
 	processor AsyncJobProcessor[K, V],
 	finalizer AsyncJobFinalizer[S, K, V],
 	config Config) (*AsyncJobScheduler[S, K, V], error) {
@@ -221,7 +184,7 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 
 	maxConcurrentKeys := config.concurrentKeys()
 	ap := &AsyncJobScheduler[S, K, V]{
-		openStatus:        newOpenStatus(ctx),
+		runStatus:         eventSource.runStatus.Fork(),
 		processor:         processor,
 		finalizer:         finalizer,
 		workerQueueDepth:  int64(config.WorkerQueueDepth),
@@ -243,11 +206,11 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) isClosed() bool {
-	return !ap.openStatus.isOpen()
+	return !ap.runStatus.Running()
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) Close() {
-	ap.openStatus.close()
+	ap.runStatus.Halt()
 	close(ap.workerFreeSignal)
 	close(ap.workerChannel)
 }
@@ -262,7 +225,7 @@ func (ap *AsyncJobScheduler[S, K, V]) newQueue() interface{} {
 		capacity:  qd,
 		workQueue: newAsyncItemQueue[asyncJobContainer[S, K, V]](qd),
 		processor: ap.processor,
-		ctx:       ap.openStatus.context(),
+		ctx:       ap.runStatus.Ctx(),
 	}
 }
 
@@ -277,7 +240,7 @@ func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value
 		value:        value,
 		err:          nil,
 	})
-	return Complete, nil
+	return Incomplete, nil
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) scheduleItem(item asyncJobContainer[S, K, V]) {

@@ -15,7 +15,6 @@
 package streams
 
 import (
-	"context"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -49,8 +48,7 @@ type partitionWorker[T StateStore] struct {
 	stopped             chan struct{}
 	changeLog           *changeLogPartition[T]
 	eventSource         *EventSource[T]
-	ctx                 context.Context
-	cancel              func()
+	runStatus           sak.RunStatus
 	pending             int64
 	processed           int64
 	highestOffset       int64
@@ -79,9 +77,10 @@ func newPartitionWorker[T StateStore](
 		input:               make(chan []*kgo.Record, 256),
 		eventInput:          make(chan *kgo.Record, 4096),
 		interjectionChannel: make(chan *interjection[T], 1),
+		runStatus:           eventSource.runStatus.Fork(),
 		highestOffset:       -1,
 	}
-	pw.ctx, pw.cancel = context.WithCancel(context.Background())
+	// pw.ctx, pw.cancel = context.WithCancel(context.Background())
 	go pw.pushRecords()
 	go pw.work(pw.eventSource.interjections, waiter, commitLog)
 
@@ -97,7 +96,7 @@ func (pw *partitionWorker[T]) add(records []*kgo.Record) {
 }
 
 func (pw *partitionWorker[T]) revoke() {
-	pw.cancel()
+	pw.runStatus.Halt()
 }
 
 type sincer struct {
@@ -115,7 +114,7 @@ func (pw *partitionWorker[T]) pushRecords() {
 			for _, record := range records {
 				pw.eventInput <- record
 			}
-		case <-pw.ctx.Done():
+		case <-pw.runStatus.Done():
 			log.Infof("Closing worker for %+v", pw.topicPartition)
 			pw.stopSignal <- struct{}{}
 			<-pw.stopped
@@ -144,7 +143,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 		select {
 		case record := <-pw.eventInput:
 			if record != nil {
-				pw.handleEvent(newEventContext(pw.ctx, record, pw.changeLog.changeLogData(), pw))
+				pw.handleEvent(newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw))
 			}
 		case job := <-pw.asyncCompleter.asyncJobs:
 			if state, _ := job.finalize(); state == Complete {
@@ -190,11 +189,11 @@ func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
 }
 
 func (pw *partitionWorker[T]) isRevoked() bool {
-	return pw.ctx.Err() != nil
+	return pw.runStatus.Err() != nil
 }
 
 func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
-	ec := newInterjectionContext(pw.ctx, pw.topicPartition, pw.changeLog.changeLogData(), pw.asyncCompleter)
+	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw.asyncCompleter)
 	if pw.eosProducer != nil {
 		pw.eosProducer.addEventContext(ec)
 	}
@@ -215,7 +214,7 @@ func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
 		// it is possible that the 2 are different, and so we use commitLog.lastProcessed() to respect the eos promise
 		// and ignore records that have already been processed. It's is not likely this will ever happen in practice, as we are using cooperative rebalancing
 		// but let's be sure
-		log.Debugf("Dropping message dut commitLog lag, offset: %d < %d for %+v", offset, pw.highestOffset, pw.topicPartition)
+		log.Tracef("Dropping message due commitLog lag, offset: %d < %d for %+v", offset, pw.highestOffset, pw.topicPartition)
 		return true
 	}
 
