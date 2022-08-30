@@ -104,18 +104,22 @@ type Source struct {
 }
 
 type Cluster interface {
-	Config() []kgo.Opt
+	Config() ([]kgo.Opt, error)
 }
 
 type SimpleCluster []string
 
-func (sc SimpleCluster) Config() []kgo.Opt {
-	return []kgo.Opt{kgo.SeedBrokers(sc...)}
+func (sc SimpleCluster) Config() ([]kgo.Opt, error) {
+	return []kgo.Opt{kgo.SeedBrokers(sc...)}, nil
 }
 
 func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 	configOptions := []kgo.Opt{kgo.WithLogger(kgoLogger), kgo.ProducerBatchCompression(kgo.NoCompression())}
-	configOptions = append(configOptions, cluster.Config()...)
+	opts, err := cluster.Config()
+	if err != nil {
+		return nil, err
+	}
+	configOptions = append(configOptions, opts...)
 	configOptions = append(configOptions, options...)
 	return kgo.NewClient(configOptions...)
 }
