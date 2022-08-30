@@ -209,12 +209,6 @@ func (ap *AsyncJobScheduler[S, K, V]) isClosed() bool {
 	return !ap.runStatus.Running()
 }
 
-func (ap *AsyncJobScheduler[S, K, V]) Close() {
-	ap.runStatus.Halt()
-	close(ap.workerFreeSignal)
-	close(ap.workerChannel)
-}
-
 func (ap *AsyncJobScheduler[S, K, V]) queueDepth() int64 {
 	return atomic.LoadInt64(&ap.workerQueueDepth)
 }
@@ -254,6 +248,9 @@ func (ap *AsyncJobScheduler[S, K, V]) scheduleItem(item asyncJobContainer[S, K, 
 			ap.mux.Unlock()
 			// wait until a worker thread finshes processing and try again
 			ap.waitForWorker()
+			if ap.isClosed() {
+				return
+			}
 		}
 	}
 	/*
@@ -278,18 +275,24 @@ func (ap *AsyncJobScheduler[S, K, V]) scheduleItem(item asyncJobContainer[S, K, 
 
 func (ap *AsyncJobScheduler[S, K, V]) work() {
 	for {
-		if ap.isClosed() {
+		select {
+		case wq := <-ap.workerChannel:
+			if wq != nil {
+				wq.process()
+				ap.releaseWorker(wq)
+			}
+		case <-ap.runStatus.Done():
+			// there may be routines publishing to or receiving from
+			// ap.workerFreeSignal. If we close it, those that are publishing will cause a panic
+			// so try to publish to close out any receivers.
+			// if we can't, it means the channel is already full and we've done our job and any receivers will close
+			select {
+			case ap.workerFreeSignal <- struct{}{}:
+			default:
+			}
 			return
 		}
-		if wq := ap.nextWorker(); wq != nil {
-			wq.process()
-			ap.releaseWorker(wq)
-		}
 	}
-}
-
-func (ap *AsyncJobScheduler[S, K, V]) nextWorker() *worker[S, K, V] {
-	return <-ap.workerChannel
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) SetWorkerQueueDepth(size int) {
