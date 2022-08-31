@@ -184,10 +184,10 @@ type producerNode[T any] struct {
 	recordsToProduce      []*Record
 	eventContexts         []*EventContext[T]
 	currentTopicParitions map[TopicPartition]int64
-	errs                  []error
-	transacting           bool
-	firstEvent            time.Time
-	mux                   sync.Mutex
+	// errs                  []error
+	transacting bool
+	firstEvent  time.Time
+	mux         sync.Mutex
 }
 
 func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog, revokeLock *sync.RWMutex) *producerNode[T] {
@@ -232,12 +232,12 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 func (p *producerNode[T]) commit() error {
 	p.revokeLock.RLock()
 	for _, ec := range p.eventContexts {
-		ec.Wait()
+		ec.waitUntilComplete()
 	}
 	ctx, cancelFlush := context.WithTimeout(context.Background(), 30*time.Second)
 	for tp, offset := range p.currentTopicParitions {
 		crd := p.commitLog.commitRecord(tp, offset)
-		p.produceRecord(ctx, crd, nil)
+		p.produceRecord(ctx, crd)
 	}
 	err := p.client.Flush(ctx)
 	cancelFlush()
@@ -272,7 +272,7 @@ func (p *producerNode[T]) clearState() {
 	p.recordsToProduce = p.recordsToProduce[0:0]
 }
 
-func (p *producerNode[T]) produceRecord(ctx context.Context, record *Record, syncWaiter *sync.WaitGroup) {
+func (p *producerNode[T]) produceRecord(ctx context.Context, record *Record) {
 	p.revokeLock.RLock()
 	defer p.revokeLock.RUnlock()
 	p.recordsToProduce = append(p.recordsToProduce, record)
@@ -281,16 +281,11 @@ func (p *producerNode[T]) produceRecord(ctx context.Context, record *Record, syn
 			if err != nil {
 				p.mux.Lock()
 				defer p.mux.Unlock()
-				p.errs = append(p.errs, err)
+				// TODO: proper way to handle producer errors
+				// p.errs = append(p.errs, err)
 				log.Errorf("%v, record %v", err, r)
 			}
-			if syncWaiter != nil {
-				syncWaiter.Done()
-			}
 			record.release()
-
 		})
-	} else if syncWaiter != nil {
-		syncWaiter.Done()
 	}
 }

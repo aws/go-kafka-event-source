@@ -127,43 +127,43 @@ type AsyncJobScheduler[S StateStore, K comparable, V any] struct {
 	workerPool        sync.Pool
 }
 
-type Config struct {
+type SchedulerConfig struct {
 	Concurrency, WorkerQueueDepth, MaxConcurrentKeys int
 }
 
-/* it does not make an sense to have less concurrency than max keys */
-func (c Config) concurrentKeys() int {
+/* it does not make an sense to have less concurrent keys than max number of processors */
+func (c SchedulerConfig) concurrentKeys() int {
 	if c.Concurrency > c.MaxConcurrentKeys {
 		return c.Concurrency
 	}
 	return c.MaxConcurrentKeys
 }
 
-var DefaultConfig = Config{
+var DefaultConfig = SchedulerConfig{
 	Concurrency:       runtime.NumCPU(),
 	WorkerQueueDepth:  1000,
 	MaxConcurrentKeys: 10000,
 }
 
-var ComputeConfig = Config{
+var ComputeConfig = SchedulerConfig{
 	Concurrency:       runtime.NumCPU(),
 	WorkerQueueDepth:  1000,
 	MaxConcurrentKeys: 10000,
 }
 
-var FastNetworkConfig = Config{
+var FastNetworkConfig = SchedulerConfig{
 	Concurrency:       runtime.NumCPU() * 4,
 	WorkerQueueDepth:  100,
 	MaxConcurrentKeys: 10000,
 }
 
-var SlowNetworkConfig = Config{
+var SlowNetworkConfig = SchedulerConfig{
 	Concurrency:       runtime.NumCPU() * 16,
 	WorkerQueueDepth:  100,
 	MaxConcurrentKeys: 10000,
 }
 
-var WideNetworkConfig = Config{
+var WideNetworkConfig = SchedulerConfig{
 	Concurrency:       runtime.NumCPU() * 32,
 	WorkerQueueDepth:  1000,
 	MaxConcurrentKeys: 10000,
@@ -173,7 +173,7 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	eventSource *EventSource[S],
 	processor AsyncJobProcessor[K, V],
 	finalizer AsyncJobFinalizer[S, K, V],
-	config Config) (*AsyncJobScheduler[S, K, V], error) {
+	config SchedulerConfig) (*AsyncJobScheduler[S, K, V], error) {
 
 	if config.WorkerQueueDepth < 0 {
 		return nil, errors.New("workerQueueDepth must be >= 0")
@@ -312,7 +312,7 @@ func (ap *AsyncJobScheduler[S, K, V]) SetMaxConcurrentKeys(size int) {
 
 	// lock here as grabWorker() uses this value, locked in release/scheduleWorker
 	ap.mux.Lock()
-	ap.maxConcurrentKeys = Config{MaxConcurrentKeys: size}.concurrentKeys()
+	ap.maxConcurrentKeys = SchedulerConfig{MaxConcurrentKeys: size}.concurrentKeys()
 	ap.mux.Unlock()
 	ap.ensureWorkerChannelCapacity(size, prevMaxKeys)
 }

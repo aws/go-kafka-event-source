@@ -21,32 +21,20 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
-type Encode[T any] func(*bytes.Buffer, T)
-type Decode[T any] func([]byte) T
-
 type Codec[T any] interface {
-	Encode(*bytes.Buffer, T)
-	Decode([]byte) T
+	Encode(*bytes.Buffer, T) error
+	Decode([]byte) (T, error)
 }
 
 var defaultJson = jsoniter.ConfigCompatibleWithStandardLibrary
 
-func ItemDecoder[T any, C Codec[T]](record streams.IncomingRecord) T {
-	var codec C
-	return codec.Decode(record.Value())
-}
-
-func ItemEncoder[T any, C Codec[T]](record streams.IncomingRecord) T {
-	var codec C
-	return codec.Decode(record.Value())
-}
-
 // A convenience function for decoding an IncomingRecord.
 // Conforms to streams.IncomingRecordDecoder interface needed for streams.RegisterEventType
-//  streams.RegisterEventType(myEventSource, codec.JsonItemDecoder[myType], myHandler, "myType")
-//  // or standalone
-//  myDecoder := codec.JsonItemDecoder[myType]
-//  myItem := myDecoder(incomingRecord)
+//
+//	streams.RegisterEventType(myEventSource, codec.JsonItemDecoder[myType], myHandler, "myType")
+//	// or standalone
+//	myDecoder := codec.JsonItemDecoder[myType]
+//	myItem := myDecoder(incomingRecord)
 func JsonItemDecoder[T any](record streams.IncomingRecord) T {
 	var codec JsonCodec[T]
 	return codec.Decode(record.Value())
@@ -54,8 +42,9 @@ func JsonItemDecoder[T any](record streams.IncomingRecord) T {
 
 // A convenience function for encoding an item into a Record suitable for sending to a producer
 // Please not that the Key on the record will be left uninitialized. Usage:
-//  record := codec.JsonItemEncoder("myType", myItem)
-//  record.WriteKeyString(myItem.Key)
+//
+//	record := codec.JsonItemEncoder("myType", myItem)
+//	record.WriteKeyString(myItem.Key)
 func JsonItemEncoder[T any](recordType string, item T) *streams.Record {
 	var codec JsonCodec[T]
 	record := streams.NewRecord().WithRecordType(recordType)
@@ -65,8 +54,9 @@ func JsonItemEncoder[T any](recordType string, item T) *streams.Record {
 
 // A convenience function for encoding an item into a ChangeLogEntry suitable writing to a StateStore
 // Please not that the Key on the entry will be left uninitialized. Usage:
-//  entry := codec.JsonChangeLogEntryEncoder("myType", myItem)
-//  entry.WriteKeyString(myItem.Key)
+//
+//	entry := codec.JsonChangeLogEntryEncoder("myType", myItem)
+//	entry.WriteKeyString(myItem.Key)
 func JsonChangeLogEntryEncoder[T any](entryType string, item T) streams.ChangeLogEntry {
 	var codec JsonCodec[T]
 	cle := streams.NewChangeLogEntry().WithEntryType(entryType)
@@ -78,11 +68,11 @@ func JsonChangeLogEntryEncoder[T any](entryType string, item T) streams.ChangeLo
 // Uses "github.com/json-iterator/go".ConfigCompatibleWithStandardLibrary for en/decoding JSON in a perforamnt way
 type JsonCodec[T any] struct{}
 
-func (JsonCodec[T]) Encode(b *bytes.Buffer, t T) {
+func (JsonCodec[T]) Encode(b *bytes.Buffer, t T) error {
 	stream := defaultJson.BorrowStream(b)
 	defer defaultJson.ReturnStream(stream)
 	stream.WriteVal(t)
-	stream.Flush()
+	return stream.Flush()
 }
 
 func (JsonCodec[T]) Decode(b []byte) T {
@@ -96,24 +86,26 @@ func (JsonCodec[T]) Decode(b []byte) T {
 
 type stringCodec struct{}
 
-func (stringCodec) Encode(b *bytes.Buffer, s string) {
-	b.WriteString(s)
+func (stringCodec) Encode(b *bytes.Buffer, s string) error {
+	_, err := b.WriteString(s)
+	return err
 }
 
-func (stringCodec) Decode(b []byte) string {
-	return string(b)
+func (stringCodec) Decode(b []byte) (string, error) {
+	return string(b), nil
 }
 
 var StringCodec Codec[string] = stringCodec{}
 
 type byteCodec struct{}
 
-func (byteCodec) Encode(b *bytes.Buffer, v []byte) {
-	b.Write(v)
+func (byteCodec) Encode(b *bytes.Buffer, v []byte) error {
+	_, err := b.Write(v)
+	return err
 }
 
-func (byteCodec) Decode(b []byte) []byte {
-	return b
+func (byteCodec) Decode(b []byte) ([]byte, error) {
+	return b, nil
 }
 
 var ByteCodec Codec[[]byte] = byteCodec{}

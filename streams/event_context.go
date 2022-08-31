@@ -26,14 +26,18 @@ type EventContext[T any] struct {
 	ctx            context.Context
 	producer       *producerNode[T]
 	changeLog      *changeLogData[T]
+	next           *EventContext[T]
+	pendingRecords []recordContainer
 	input          IncomingRecord
 	asynCompleter  asyncCompleter[T]
-	topicPartition TopicPartition
-	pendingRecords []recordContainer
-	next           *EventContext[T]
 	produceLock    sync.Mutex
-	sync.WaitGroup
+	wg             sync.WaitGroup
+	topicPartition TopicPartition
 	isInterjection bool
+}
+
+func (ec *EventContext[T]) waitUntilComplete() {
+	ec.wg.Wait()
 }
 
 func (ec *EventContext[T]) Ctx() context.Context {
@@ -66,7 +70,7 @@ func (ec *EventContext[T]) Forward(records ...*Record) {
 		if ec.producer == nil {
 			ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, false})
 		} else {
-			ec.producer.produceRecord(ec.ctx, record, nil)
+			ec.producer.produceRecord(ec.ctx, record)
 		}
 	}
 
@@ -85,7 +89,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 				WithTopic(ec.changeLog.topic).
 				WithPartition(ec.topicPartition.Partition)
 			if ec.producer != nil {
-				ec.producer.produceRecord(ec.ctx, record, nil)
+				ec.producer.produceRecord(ec.ctx, record)
 			} else {
 				ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, true})
 			}
@@ -97,8 +101,8 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 
 // AsyncJobComplete should be called when an async event processor has performed it's function.
 // the finalize cunction should return Complete if there are no other pending asynchronous jobs for the event context in question,
-// regardless of error state. `finalize` does no accpt any arguments, so you're callback should encapsulate
-// any pertinent data needed for processing.
+// regardless of error state. `finalize` does no accept any arguments, so you're callback should encapsulate
+// any pertinent data needed for processing. See [streams.AsyncJobScheduler] for an example.
 func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, error)) {
 	ec.asynCompleter.asyncComplete(asyncJob[T]{
 		ctx:      ec,
@@ -112,7 +116,7 @@ func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
 	ec.producer = p
 
 	for _, cont := range ec.pendingRecords {
-		ec.producer.produceRecord(ec.ctx, cont.record, nil)
+		ec.producer.produceRecord(ec.ctx, cont.record)
 	}
 	ec.pendingRecords = []recordContainer{}
 }
@@ -128,7 +132,7 @@ func (ec *EventContext[T]) Store() T {
 }
 
 func (ec *EventContext[T]) complete() {
-	ec.Done()
+	ec.wg.Done()
 }
 
 type recordContainer struct {
@@ -146,7 +150,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 		isInterjection: false,
 		asynCompleter:  pw.asyncCompleter,
 	}
-	ec.Add(1)
+	ec.wg.Add(1)
 	return ec
 }
 
@@ -158,6 +162,6 @@ func newInterjectionContext[T any](ctx context.Context, topicPartition TopicPart
 		changeLog:      changeLog,
 		asynCompleter:  ac,
 	}
-	ec.Add(1)
+	ec.wg.Add(1)
 	return ec
 }
