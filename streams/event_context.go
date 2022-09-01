@@ -73,7 +73,7 @@ func (ec *EventContext[T]) Forward(records ...*Record) {
 		if ec.producer == nil {
 			ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, false})
 		} else {
-			ec.producer.produceRecord(context.TODO(), record)
+			ec.producer.produceRecord(ec, record)
 		}
 	}
 
@@ -98,7 +98,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 				WithTopic(ec.changeLog.topic).
 				WithPartition(ec.topicPartition.Partition)
 			if ec.producer != nil {
-				ec.producer.produceRecord(context.TODO(), record)
+				ec.producer.produceRecord(ec, record)
 			} else {
 				ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, true})
 			}
@@ -136,7 +136,7 @@ func (ec *EventContext[T]) trySetProducer(p *producerNode[T]) bool {
 	ec.producer = p
 	p.addEventContext(ec)
 	for _, cont := range ec.pendingRecords {
-		ec.producer.produceRecord(context.TODO(), cont.record)
+		ec.producer.produceRecord(ec, cont.record)
 	}
 	ec.pendingRecords = []recordContainer{}
 	return true
