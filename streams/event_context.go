@@ -23,6 +23,8 @@ import (
 
 // Contains information about the current event. Is passed to EventProcessors and Interjections
 type EventContext[T any] struct {
+	// we're going to keep a reference to the partition worker context
+	// so we can skip over any buffered events in the EOSProducer
 	ctx            context.Context
 	producer       *producerNode[T]
 	changeLog      *changeLogData[T]
@@ -34,14 +36,15 @@ type EventContext[T any] struct {
 	wg             sync.WaitGroup
 	topicPartition TopicPartition
 	isInterjection bool
+	rejected       bool
 }
 
 func (ec *EventContext[T]) waitUntilComplete() {
 	ec.wg.Wait()
 }
 
-func (ec *EventContext[T]) Ctx() context.Context {
-	return ec.ctx
+func (ec *EventContext[T]) isRevoked() bool {
+	return ec.ctx.Err() != nil
 }
 
 // Returns true if this EventContext represents an Interjection
@@ -70,10 +73,16 @@ func (ec *EventContext[T]) Forward(records ...*Record) {
 		if ec.producer == nil {
 			ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, false})
 		} else {
-			ec.producer.produceRecord(ec.ctx, record)
+			ec.producer.produceRecord(context.TODO(), record)
 		}
 	}
 
+}
+
+func (ec *EventContext[T]) isRejected() bool {
+	ec.produceLock.Lock()
+	defer ec.produceLock.Unlock()
+	return ec.rejected
 }
 
 // Forwards records to the transactional producer for your EventSource. When you add an item to your StateStore,
@@ -89,7 +98,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 				WithTopic(ec.changeLog.topic).
 				WithPartition(ec.topicPartition.Partition)
 			if ec.producer != nil {
-				ec.producer.produceRecord(ec.ctx, record)
+				ec.producer.produceRecord(context.TODO(), record)
 			} else {
 				ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, true})
 			}
@@ -104,21 +113,33 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 // regardless of error state. `finalize` does no accept any arguments, so you're callback should encapsulate
 // any pertinent data needed for processing. See [streams.AsyncJobScheduler] for an example.
 func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, error)) {
+	if ec.isRejected() {
+		// don't bother trying to complete this task. It will only cause confusion
+		return
+	}
 	ec.asynCompleter.asyncComplete(asyncJob[T]{
 		ctx:      ec,
 		finalize: finalize,
 	})
 }
 
-func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
+func (ec *EventContext[T]) trySetProducer(p *producerNode[T]) bool {
 	ec.produceLock.Lock()
 	defer ec.produceLock.Unlock()
-	ec.producer = p
+	if ec.isRevoked() {
+		// this event was buffered in the eosProducer, but the partition has since been revoked
+		// let's drop this so as not to add to rebalance latency
+		ec.rejected = true
+		return false
+	}
 
+	ec.producer = p
+	p.addEventContext(ec)
 	for _, cont := range ec.pendingRecords {
-		ec.producer.produceRecord(ec.ctx, cont.record)
+		ec.producer.produceRecord(context.TODO(), cont.record)
 	}
 	ec.pendingRecords = []recordContainer{}
+	return true
 }
 
 // Return the raw input record for this event or an uninitialized record and false if the EventContect represents an Interjections

@@ -45,6 +45,7 @@ type partitionWorker[T StateStore] struct {
 	asyncCompleter      asyncCompleter[T]
 	interjectionChannel chan *interjection[T]
 	stopSignal          chan struct{}
+	revokedSignal       chan struct{}
 	stopped             chan struct{}
 	changeLog           *changeLogPartition[T]
 	eventSource         *EventSource[T]
@@ -69,6 +70,7 @@ func newPartitionWorker[T StateStore](
 		changeLog:      changeLog,
 		eosProducer:    eosProducer,
 		stopSignal:     make(chan struct{}),
+		revokedSignal:  make(chan struct{}),
 		stopped:        make(chan struct{}),
 		asyncCompleter: asyncCompleter[T]{
 			asyncJobs:      make(chan asyncJob[T], 8192),
@@ -146,6 +148,8 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 				pw.handleEvent(newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw))
 			}
 		case job := <-pw.asyncCompleter.asyncJobs:
+			// TODO: if the partition was reject and we have not tried to produce yet
+			// drop this event. This is tricky because we need to know if we are buffered or not
 			if state, _ := job.finalize(); state == Complete {
 				job.ctx.complete()
 			}
@@ -160,10 +164,17 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 			for _, ij := range ijPtrs {
 				ij.cancel()
 			}
+			go pw.waitForRevocation()
+		case <-pw.revokedSignal:
 			pw.stopped <- struct{}{}
 			return
 		}
 	}
+}
+
+func (pw *partitionWorker[T]) waitForRevocation() {
+	pw.eosProducer.revokePartition(pw.topicPartition)
+	pw.revokedSignal <- struct{}{}
 }
 
 type asyncCompleter[T any] struct {
@@ -189,10 +200,13 @@ func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
 }
 
 func (pw *partitionWorker[T]) isRevoked() bool {
-	return pw.runStatus.Err() != nil
+	return !pw.runStatus.Running()
 }
 
 func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
+	if pw.isRevoked() {
+		return
+	}
 	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw.asyncCompleter)
 	if pw.eosProducer != nil {
 		pw.eosProducer.addEventContext(ec)

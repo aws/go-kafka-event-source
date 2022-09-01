@@ -120,9 +120,9 @@ func (b *produceBatcher[T]) Key() TopicPartition {
 	return b.ctx.TopicPartition()
 }
 
-func (b *produceBatcher[T]) Ctx() context.Context {
-	return b.ctx.Ctx()
-}
+// func (b *produceBatcher[T]) Ctx() context.Context {
+// 	return b.ctx.Ctx()
+// }
 
 func (b *produceBatcher[T]) cleanup() {
 	for _, r := range b.records {
@@ -159,6 +159,6 @@ func (p *EventSourceProducer[T]) produceBatch(b *produceBatcher[T]) {
 		if len(record.kRecord.Topic) == 0 {
 			record = record.WithTopic(p.destination.DefaultTopic)
 		}
-		p.client.Produce(b.ctx.Ctx(), record.ToKafkaRecord(), b.recordComplete)
+		p.client.Produce(context.TODO(), record.ToKafkaRecord(), b.recordComplete)
 	}
 }

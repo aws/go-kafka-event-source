@@ -215,17 +215,14 @@ func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []in
 	if sc.partitionedStore == nil {
 		return
 	}
-	var taps []TopicPartition
 	for _, p := range partitions {
 		tap := TopicPartition{Partition: p, Topic: topic}
-		taps = append(taps, tap)
 		if worker, ok := sc.workers[tap]; ok {
 			worker.revoke()
 			delete(sc.workers, tap)
 		}
 		sc.partitionedStore.revoke(p)
 	}
-	sc.producerPool.revokePartitions(taps)
 }
 
 func (sc *eventSourceConsumer[T]) partitionsAssigned(ctx context.Context, _ *kgo.Client, assignments map[string][]int32) {

@@ -84,20 +84,13 @@ func (w *worker[S, K, V]) advance() {
 func (w *worker[S, K, V]) process() {
 
 	if w.ctx.Err() != nil {
+		// worker is cancelled
 		return
 	}
 	item, ok := w.workQueue.peek()
 	if !ok {
 		return
 	}
-	//Err() will return non-nil if the context has been canceled
-	//this will be logged by the consumer, so let's not crowd the logs with more
-	itemCtx := item.eventContext.Ctx()
-	if itemCtx != nil && itemCtx.Err() != nil {
-		w.advance()
-		// continue
-	}
-
 	item.err = w.processor(item.key, item.value)
 	w.advance()
 	item.eventContext.AsyncJobComplete(item.invokeFinalizer)
