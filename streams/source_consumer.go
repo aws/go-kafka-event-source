@@ -68,7 +68,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 
 	for _, gb := range groupBalancers {
 		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
-			log.Errorf("Have incremental load balancer")
 			sc.incrBalancer = igr
 			break
 		}
@@ -284,6 +283,9 @@ func (sc *eventSourceConsumer[T]) interject(tp TopicPartition, cmd Interjector[T
 	w := sc.workers[tp]
 	sc.workerMux.Unlock()
 	if w == nil {
+		if callback != nil {
+			callback()
+		}
 		return
 	}
 	w.interjectionChannel <- &interjection[T]{
@@ -303,7 +305,7 @@ func (sc *eventSourceConsumer[T]) interject(tp TopicPartition, cmd Interjector[T
 // without create an individual timer per partition.
 // InterjectNow() will be invoked each active partition, blocking on each iteration until the Interjection can be processed.
 // Useful for gathering store statistics, but can be used in place of a standard Interjection.
-func (sc *eventSourceConsumer[T]) forEachChangeLogPartition(interjector Interjector[T]) {
+func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionSync(interjector Interjector[T]) {
 	sc.workerMux.Lock()
 	tps := sak.MapKeysToSlice(sc.workers)
 	sc.workerMux.Unlock()
@@ -314,6 +316,18 @@ func (sc *eventSourceConsumer[T]) forEachChangeLogPartition(interjector Interjec
 		sc.interject(tp, interjector, wg.Done)
 		wg.Wait()
 	}
+}
+
+func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionAsync(interjector Interjector[T]) {
+	sc.workerMux.Lock()
+	tps := sak.MapKeysToSlice(sc.workers)
+	sc.workerMux.Unlock()
+	wg := &sync.WaitGroup{}
+	wg.Add(len(tps))
+	for _, tp := range tps {
+		sc.interject(tp, interjector, wg.Done)
+	}
+	wg.Wait()
 }
 
 // TODO: This needs some more work after we provide balancer configuration.

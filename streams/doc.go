@@ -55,6 +55,12 @@ or at any time via [streams.EventSource.Interject]. This is useful for bookeepin
 even error handling. Interjections have full access to the StateStore associated with an EventSource and can interact with output topics
 like any other EventProcessor.
 
+# Async Processing
+
+GKES provides conventions for asynchronously processing events on the same Kafka partition while still maintaining data/stream integrity.
+The [AsyncBatcher] and [AsyncJobScheduler] allow you to split a TopicPartition into sub-streams by key,
+ensuring all events for a partitcular key are processed in order, allowing for parallel processing on a given TopicPartition.
+
 # EOS GKES Style
 
 [TODO]
@@ -69,7 +75,7 @@ but do not allow you to migrate froma non-cooperative rebalancing strategy (rang
 only migration path is an entirely new consumer group. Which is, to put it mildly, a big challenge for live applications which are allowed zero downtime.
 The kgo package now makes this possible.
 
-Kgo also has the proper hooks need to implement the [streams.IncrementalGroupRebalancer], which is necessary for safe deployments when using a local state store.
+Kgo also has the proper hooks need to implement the [IncrementalGroupRebalancer], which is necessary for safe deployments when using a local state store.
 
 [Event Sourcing applications]: https://martinfowler.com/eaaDev/EventSourcing.html
 [kgo]: https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo

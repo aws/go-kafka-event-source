@@ -16,6 +16,9 @@ package streams
 
 import (
 	"context"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
@@ -50,13 +53,127 @@ func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFac
 	return es, err
 }
 
+// ConsumeEvents starts the underlying Kafka consumer. This call is non-blocking,
+// so if called from main(), it should be followed by some other blocking call to prevent the application from exiting.
+// See [streams.EventSource.WaitForSignals] for an example.
 func (es *EventSource[T]) ConsumeEvents() {
 	go es.consumer.start()
 }
 
+/*
+WaitForSignals is convenience function suitable for use in a main() function.
+Blocks until `signals` are received then gracefully closes the consumer by calling [streams.EventSource.Stop].
+If `signals` are not provided, syscall.SIGINT and syscall.SIGHUP are used. If `preHook` is non-nil, it will be invoked before
+Stop() is invoked. If the preHook returns false, this call continues to block. If true is returned, `signal.Reset(signals...)`
+is invoked and the consumer shutdown process begins. Simple example:
+
+	func main(){
+		myEventSource := initEventSource()
+		myEventSource.ConsumeEvents()
+		myEventSource.WaitForSignals(nil)
+		fmt.Println("exiting")
+	}
+
+Prehook example:
+
+	func main(){
+		myEventSource := initEventSource()
+		myEventSource.ConsumeEvents()
+		myEventSource.WaitForSignals(func(s os.Signal) bool {
+			fmt.Printf("starting shutdown from signal %v\n", s)
+			shutDownSomeOtherProcess()
+			return true
+		})
+		fmt.Println("exiting")
+	}
+
+In this example, The consumer will close on syscall.SIGINT or syscall.SIGHUP but not syscall.SIGUSR1:
+
+	func main(){
+		myEventSource := initEventSource()
+		myEventSource.ConsumeEvents()
+		myEventSource.WaitForSignals(func(s os.Signal) bool {
+			if s == syscall.SIGUSR1 {
+				fmt.Println("user signal received")
+				performSomeTask()
+				return false
+			}
+			return true
+		}, syscall.SIGINT and syscall.SIGHUP, syscall.SIGUSR1)
+		fmt.Println("exiting")
+	}
+*/
+func (es *EventSource[T]) WaitForSignals(preHook func(os.Signal) bool, signals ...os.Signal) {
+	if len(signals) == 0 {
+		signals = []os.Signal{syscall.SIGINT, syscall.SIGHUP}
+	}
+	if preHook == nil {
+		preHook = func(_ os.Signal) bool {
+			return true
+		}
+	}
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, signals...)
+	for s := range c {
+		if preHook(s) {
+			signal.Reset(signals...)
+			break
+		}
+	}
+	es.Stop()
+	<-es.Done()
+}
+
+/*
+WaitForChannel is similar to WaitForSignals, but blocks on a `chan struct{}` then invokes `callback` when finished.
+Useful when you have multiple EventSources in a single application. Example:
+
+	func main() {
+
+		myEventSource1 := initEventSource1()
+		myEventSource2.ConsumeEvents()
+
+		myEventSource2 := initEventSource2()
+		myEventSource2.ConsumeEvents()
+
+		wg := &sync.WaitGroup{}
+		wg.Add(2)
+
+		eventSourceChannel = make(chan struct{})
+
+		go myEventSource1.WaitForChannel(eventSourceChannel, wg.Done)
+		go myEventSource2.WaitForChannel(eventSourceChannel, wg.Done)
+
+		osChannel := make(chan os.Signal)
+		signal.Notify(osChannel, syscall.SIGINT, syscall.SIGHUP)
+		<-osChannel
+		close(eventSourceChannel)
+		wg.Wait()
+		fmt.Println("exiting")
+	}
+*/
+func (es *EventSource[T]) WaitForChannel(c chan struct{}, callback func()) {
+	<-c
+	es.Stop()
+	<-es.Done()
+	if callback != nil {
+		callback()
+	}
+}
+
+// Done blocks while the underlying Kafka consumer is active.
+func (es *EventSource[T]) Done() <-chan struct{} {
+	return es.done
+}
+
 // Signals the underlying *kgo.Client that the underlying consumer should exit the group.
 // If you are using an IncrementalGroupRebalancer, this will trigger a graceful exit where owned partitions are surrendered
-// according to it's configuration. If you are not, this call has the same effect as StopNow()
+// according to it's configuration. If you are not, this call has the same effect as [streams.EventSource.StopNow].
+//
+// Calls to Stop are not blocking. To block during the shut down process, this call should be followed by `<-eventSource.Done()`
+//
+// To simplify running from main(), the [streams.EventSource.WaitForSignals] and [streams.EventSource.WaitForChannel] calls have been provided.
+// So unless you have extremely complex application shutdown logic, you should not need to interact with this method directly.
 func (es *EventSource[T]) Stop() {
 	go func() {
 		<-es.consumer.leave()
@@ -68,13 +185,9 @@ func (es *EventSource[T]) Stop() {
 	}()
 }
 
-func (es *EventSource[T]) Done() <-chan struct{} {
-	return es.done
-}
-
 // Immediately stops the underlying consumer *kgo.Client by invoking sc.client.Close()
 // This has the effect of immediately surrendering all owned partitions, then closing the client.
-// If you are using an IncrementalGroupRebalancer, see the Stop() call documentation.
+// If you are using an IncrementalGroupRebalancer, this can be used as a force quit.
 func (es *EventSource[T]) StopNow() {
 	es.consumer.stop()
 	select {
@@ -104,28 +217,47 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 	})
 }
 
-// Executes `cmd` in the context of the given TopicPartition. `callback“ is an optional, and will be excuted once the interjection is complete if non-nil.
-// `callback` is used interally to make EachChangeLogPartition() a blocking call. It may or may not be useful depending on you use case.
+// Executes `cmd` in the context of the given TopicPartition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
+// `callback` is used interally to make InterjectAll a blocking call. `callback` may or may not be useful depending on your use case.
 func (es *EventSource[T]) Interject(tp TopicPartition, cmd Interjector[T], callback func()) {
 	es.consumer.interject(tp, cmd, callback)
 }
 
 /*
-A convenience function which allows you to Interject into every active partition assigned to the consumer
-without create an individual timer per partition.
-The uquivalent of calling Interject() on each active partition, blocking on each iteration until the Interjection can be processed.
+InterjectAll is a convenience function which allows you to Interject into every active partition assigned to the consumer without create an individual timer per partition.
+The equivalent of calling Interject() on each active partition, blocking until all are performed. It is worth noting that the interjections are run in parallel, so care must be taken
+not to create a deadlock between partitions via locking mechanisms such as a Mutex. If parallel processing is not of concern, [streams.EventSource.InterjectAllSync] is an alternative.
 Useful for gathering store statistics, but can be used in place of a standard Interjection. Example:
 
-	 itemCount := 0
-	 eventSource.EachChangeLogPartition(func (ec *EventContext[myStateStore], when time.Time) streams.ExecutionState {
+	preCount := int64(0)
+	postCount := int64(0)
+	eventSource.InterjectAllAsync(func (ec *EventContext[myStateStore], when time.Time) streams.ExecutionState {
 		store := ec.Store()
-		itemCount += stor.Len()
+		atomic.AddInt64(&preCount, int64(store.Len()))
+		store.performBookeepingTasks()
+		atomic.AddInt64(&postCount, int64(store.Len()))
 		return streams.Complete
-	 })
-	 fmt.Println("Number of items: ", itemCount)
+	})
+	fmt.Printf("Number of items before: %d, after: %d\n", preCount, postCount)
 */
-func (es *EventSource[T]) EachChangeLogPartition(interjector Interjector[T]) {
-	es.consumer.forEachChangeLogPartition(interjector)
+func (es *EventSource[T]) InterjectAll(interjector Interjector[T]) {
+	es.consumer.forEachChangeLogPartitionAsync(interjector)
+}
+
+/*
+InterjectAllSync performs the same function as [streams.EventSource.InterjectAll], however it blocks on each iteration.
+It may be useful if parallel processing is not of concern andyou want to avoid locking on a shared data structure. Example:
+
+	itemCount := 0
+	eventSource.InterjectAll(func (ec *EventContext[myStateStore], when time.Time) streams.ExecutionState {
+		store := ec.Store()
+		itemCount += store.Len()
+		return streams.Complete
+	})
+	fmt.Println("Number of items: ", itemCount)
+*/
+func (es *EventSource[T]) InterjectAllSync(interjector Interjector[T]) {
+	es.consumer.forEachChangeLogPartitionSync(interjector)
 }
 
 func (ec *EventSource[T]) createChangeLogReceiver(tp TopicPartition) T {

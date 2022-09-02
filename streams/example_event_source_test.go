@@ -272,3 +272,76 @@ func ExampleAsyncJobScheduler() {
 	// Processing an email job with key: 'billy@bob.com'. This may take some time, emails are tricky!
 	// Notified contact: 123, address: billy@bob.com, payload: 'sending you mail...from a computer!'
 }
+
+// func ExampleAsyncBatcher() {
+// 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
+
+// 	var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
+// 	var source = streams.Source{
+// 		GroupId:       "ExampleAsyncJobSchedulerGroup",
+// 		Topic:         "ExampleAsyncJobScheduler",
+// 		NumPartitions: 10,
+// 		SourceCluster: contactsCluster,
+// 	}
+
+// 	var destination = streams.Destination{
+// 		Cluster:      source.SourceCluster,
+// 		DefaultTopic: source.Topic,
+// 	}
+
+// 	source, err := streams.CreateSource(source)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+
+// 	eventSource, err := streams.NewEventSource(source, NewContactStore, nil)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+
+// 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], createContact, "CreateContact")
+// 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[NotifyContactEvent], notifyContactAsync, "NotifyContact")
+
+// 	notificationScheduler, err = streams.CreateAsyncJobScheduler(eventSource,
+// 		sendEmailToContact, emailToContactComplete, streams.DefaultConfig)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	wg.Add(3) // we're expecting 3 records in this example
+// 	eventSource.ConsumeEvents()
+
+// 	contact := Contact{
+// 		Id:          "123",
+// 		Email:       "billy@bob.com",
+// 		PhoneNumber: "+18005551212",
+// 		FirstName:   "Billy",
+// 		LastName:    "Bob",
+// 	}
+
+// 	notification := NotifyContactEvent{
+// 		ContactId:        "123",
+// 		NotificationType: "email",
+// 	}
+
+// 	producer := streams.NewProducer(destination)
+
+// 	createContactRecord := streams.JsonItemEncoder("CreateContact", contact)
+// 	createContactRecord.WriteKeyString(contact.Id)
+
+// 	notificationRecord := streams.JsonItemEncoder("NotifyContact", notification)
+// 	notificationRecord.WriteKeyString(notification.ContactId)
+
+// 	producer.Produce(context.Background(), createContactRecord)
+// 	producer.Produce(context.Background(), notificationRecord)
+
+// 	wg.Wait()
+// 	eventSource.Stop()
+// 	<-eventSource.Done()
+// 	// cleaning up our local Kafka cluster
+// 	// you probably don't want to delete your topic
+// 	streams.DeleteSource(source)
+// 	// Output: Created contact: 123
+// 	// Notifying contact: 123 asynchronously by email
+// 	// Processing an email job with key: 'billy@bob.com'. This may take some time, emails are tricky!
+// 	// Notified contact: 123, address: billy@bob.com, payload: 'sending you mail...from a computer!'
+// }

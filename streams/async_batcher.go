@@ -180,7 +180,7 @@ func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[S, 
 }
 
 func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[S, K, V]) {
-	ab.executor(batch.validItems()) // TODO: these items may be stale, trim this list down based on EventContext state
+	ab.executor(batch.validItems()) // these items may be stale, trim this list down based on EventContext state
 	ab.mux.Lock()
 	ab.executingCount--
 	// TODO: handle errors right here as this may effect other batches
