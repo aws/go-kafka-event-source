@@ -23,20 +23,28 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+// a container that allows to know who produced the records
+// needed for txn error conditions while there are revoked partitions
+// allows us to filter recordsToProduce on a retry and exclude partitions that have been revoked
+type recordAndEventContext[T any] struct {
+	record       *Record
+	eventContext *EventContext[T]
+}
+
 type eosProducerPool[T any] struct {
 	producerNodeQueue chan *producerNode[T]
 	onDeck            *producerNode[T]
 	commitQueue       chan *producerNode[T]
-	root              *EventContext[T]
-	tail              *EventContext[T]
 	signal            chan struct{}
 	maxBatchSize      int
 	minBatchSize      int
 	producerNodes     []*producerNode[T]
 	flushTimer        *time.Ticker
+	root              *EventContext[T]
+	tail              *EventContext[T]
+	sllLock           sync.Mutex // lock for out singly linked list of EventContexts
 	startTime         time.Time
 	cluster           Cluster
-	sllLock           sync.Mutex
 }
 
 const (
@@ -48,13 +56,12 @@ func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, 
 	pp := &eosProducerPool[T]{
 		producerNodeQueue: make(chan *producerNode[T], poolSize),
 		commitQueue:       make(chan *producerNode[T], pendingTxns),
-		// input:        make(chan ecAddRequest[T, V], Max(maxBatchSize*Max(pendingTxns, 4), 1000)),
-		minBatchSize:  minBatchSize,
-		maxBatchSize:  maxBatchSize,
-		signal:        make(chan struct{}, 1),
-		producerNodes: make([]*producerNode[T], 0, poolSize),
-		flushTimer:    time.NewTicker(noPendingDuration),
-		cluster:       cluster,
+		minBatchSize:      minBatchSize,
+		maxBatchSize:      maxBatchSize,
+		signal:            make(chan struct{}, 1),
+		producerNodes:     make([]*producerNode[T], 0, poolSize),
+		flushTimer:        time.NewTicker(noPendingDuration),
+		cluster:           cluster,
 	}
 	for i := 0; i < poolSize; i++ {
 		p := newProducerNode[T](cluster, commitLog)
@@ -67,12 +74,15 @@ func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, 
 	return pp
 }
 
+// instruct the eosProducerPool that the partition has been revoked
+// calls revokePartition on each producerNode in the pool
 func (pp *eosProducerPool[T]) revokePartition(tp TopicPartition) {
 	for _, p := range pp.producerNodes {
 		p.revokePartition(tp)
 	}
 }
 
+// buffer the event context until a producer node is available
 func (pp *eosProducerPool[T]) addEventContext(ec *EventContext[T]) {
 	pp.sllLock.Lock()
 	if pp.root == nil {
@@ -169,11 +179,6 @@ func (pp *eosProducerPool[T]) commitLoop() {
 	}
 }
 
-type recordAndEventContext[T any] struct {
-	record       *Record
-	eventContext *EventContext[T]
-}
-
 type producerNode[T any] struct {
 	client                *kgo.Client
 	commitLog             *eosCommitLog
@@ -202,6 +207,8 @@ func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog) *pr
 	}
 }
 
+// if `TopicPartition` is currently being tracked by this producerNode, blocks until the current transaction succeeds or fails.
+// otherwise, returns immediately.
 func (p *producerNode[T]) revokePartition(tp TopicPartition) {
 	// we should just be able to wait for any pending commits to flush
 	// and that should ensure that any pending events for this topic partition
@@ -318,6 +325,7 @@ func (p *producerNode[T]) clearRevokedState() {
 		}
 
 		validEvents := make([]*EventContext[T], 0, len(p.eventContexts))
+		// we previously nulled out invalid events, just create a new slice without them
 		for _, ec := range p.eventContexts {
 			if ec != nil {
 				validEvents = append(validEvents, ec)
@@ -337,8 +345,6 @@ func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
 
 	p.client.Produce(context.TODO(), record.ToKafkaRecord(), func(r *kgo.Record, err error) {
 		if err != nil {
-			// p.mux.Lock()
-			// defer p.mux.Unlock()
 			// TODO: proper way to handle producer errors
 			// p.errs = append(p.errs, err)
 			log.Errorf("%v, record %v", err, r)

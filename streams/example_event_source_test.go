@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams"
-	"github.com/aws/go-kafka-event-source/streams/codec"
 	"github.com/aws/go-kafka-event-source/streams/stores"
 )
 
@@ -154,9 +153,9 @@ func ExampleEventSource() {
 		panic(err)
 	}
 
-	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[Contact], createContact, "CreateContact")
-	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[Contact], deleteContact, "DeleteContact")
-	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[NotifyContactEvent], notifyContact, "NotifyContact")
+	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], createContact, "CreateContact")
+	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], deleteContact, "DeleteContact")
+	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[NotifyContactEvent], notifyContact, "NotifyContact")
 
 	wg.Add(4) // we're expecting 4 records in this example
 	eventSource.ConsumeEvents()
@@ -175,13 +174,13 @@ func ExampleEventSource() {
 
 	producer := streams.NewProducer(destination)
 
-	createContactRecord := codec.JsonItemEncoder("CreateContact", contact)
+	createContactRecord := streams.JsonItemEncoder("CreateContact", contact)
 	createContactRecord.WriteKeyString(contact.Id)
 
-	deleteContactRecord := codec.JsonItemEncoder("DeleteContact", contact)
+	deleteContactRecord := streams.JsonItemEncoder("DeleteContact", contact)
 	deleteContactRecord.WriteKeyString(contact.Id)
 
-	notificationRecord := codec.JsonItemEncoder("NotifyContact", notification)
+	notificationRecord := streams.JsonItemEncoder("NotifyContact", notification)
 	notificationRecord.WriteKeyString(notification.ContactId)
 
 	producer.Produce(context.Background(), createContactRecord)
@@ -227,8 +226,8 @@ func ExampleAsyncJobScheduler() {
 		panic(err)
 	}
 
-	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[Contact], createContact, "CreateContact")
-	streams.RegisterEventType(eventSource, codec.JsonItemDecoder[NotifyContactEvent], notifyContactAsync, "NotifyContact")
+	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], createContact, "CreateContact")
+	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[NotifyContactEvent], notifyContactAsync, "NotifyContact")
 
 	notificationScheduler, err = streams.CreateAsyncJobScheduler(eventSource,
 		sendEmailToContact, emailToContactComplete, streams.DefaultConfig)
@@ -253,10 +252,10 @@ func ExampleAsyncJobScheduler() {
 
 	producer := streams.NewProducer(destination)
 
-	createContactRecord := codec.JsonItemEncoder("CreateContact", contact)
+	createContactRecord := streams.JsonItemEncoder("CreateContact", contact)
 	createContactRecord.WriteKeyString(contact.Id)
 
-	notificationRecord := codec.JsonItemEncoder("NotifyContact", notification)
+	notificationRecord := streams.JsonItemEncoder("NotifyContact", notification)
 	notificationRecord.WriteKeyString(notification.ContactId)
 
 	producer.Produce(context.Background(), createContactRecord)

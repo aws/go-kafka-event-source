@@ -54,4 +54,4 @@ var (
 	IncrementalBalancer       = BalanceStrategy{BalanceType: IncrementalBalanceType, BalanceOption: 1}
 )
 
-var DefaultBalanceStrategies = []BalanceStrategy{IncrementalBalancer, RangeBalancer}
+var DefaultBalanceStrategies = []BalanceStrategy{IncrementalBalancer}

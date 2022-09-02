@@ -372,7 +372,6 @@ func (ir *incrementalRebalancer) ParseSyncAssignment(assignment []byte) (map[str
 	}
 	var instructions IncrGroupMemberInstructions
 	json.Unmarshal(cma.UserData, &instructions)
-	// log.Debugf("parsed assignment instructions: %+v", instructions)
 
 	parsed := make(map[string][]int32, len(cma.Topics))
 	for _, topic := range cma.Topics {

@@ -16,7 +16,6 @@ package stores
 
 import (
 	"github.com/aws/go-kafka-event-source/streams"
-	"github.com/aws/go-kafka-event-source/streams/codec"
 	"github.com/google/btree"
 )
 
@@ -46,7 +45,7 @@ func NewSimpleStore[T Keyed](tp streams.TopicPartition) *SimpleStore[T] {
 }
 
 func (s *SimpleStore[T]) ToChangeLogEntry(item T) streams.ChangeLogEntry {
-	var codec codec.JsonCodec[T]
+	var codec streams.JsonCodec[T]
 	cle := streams.NewChangeLogEntry()
 	cle.WriteKeyString(item.Key())
 	codec.Encode(cle.ValueWriter(), item)
@@ -87,7 +86,7 @@ func (s *SimpleStore[T]) ReceiveChange(record streams.IncomingRecord) {
 		}
 		s.tree.Delete(&keyedValue)
 	} else {
-		item := codec.JsonItemDecoder[T](record)
+		item := streams.JsonItemDecoder[T](record)
 		s.tree.ReplaceOrInsert(&keyedValue[T]{key: item.Key(), value: item})
 	}
 }

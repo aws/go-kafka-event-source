@@ -68,7 +68,9 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 
 	for _, gb := range groupBalancers {
 		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
+			log.Errorf("Have incremental load balancer")
 			sc.incrBalancer = igr
+			break
 		}
 	}
 
@@ -324,6 +326,7 @@ func (sc *eventSourceConsumer[T]) currentProtocolIsIncremental() bool {
 		log.Errorf("could not confirm group protocol: %v", err)
 		return false
 	}
+	log.Infof("consumerGroup protocol response: %+v", groups)
 	group := groups[sc.eventSource.source.GroupId]
 	return group.Protocol == IncrementalCoopProtocol
 }
@@ -331,7 +334,7 @@ func (sc *eventSourceConsumer[T]) currentProtocolIsIncremental() bool {
 // Signals the IncrementalReblancer to start the process of shutting down this consumer in an orderly fashion.
 func (sc *eventSourceConsumer[T]) leave() <-chan struct{} {
 	log.Infof("leave signaled for group: %v", sc.eventSource.source.GroupId)
-	c := make(chan struct{})
+	c := make(chan struct{}, 1)
 	if sc.incrBalancer == nil || !sc.currentProtocolIsIncremental() {
 		sc.stop()
 		c <- struct{}{}

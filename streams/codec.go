@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package codec
+package streams
 
 import (
 	"bytes"
 
-	"github.com/aws/go-kafka-event-source/streams"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -35,7 +34,7 @@ var defaultJson = jsoniter.ConfigCompatibleWithStandardLibrary
 //	// or standalone
 //	myDecoder := codec.JsonItemDecoder[myType]
 //	myItem := myDecoder(incomingRecord)
-func JsonItemDecoder[T any](record streams.IncomingRecord) T {
+func JsonItemDecoder[T any](record IncomingRecord) T {
 	var codec JsonCodec[T]
 	return codec.Decode(record.Value())
 }
@@ -45,9 +44,9 @@ func JsonItemDecoder[T any](record streams.IncomingRecord) T {
 //
 //	record := codec.JsonItemEncoder("myType", myItem)
 //	record.WriteKeyString(myItem.Key)
-func JsonItemEncoder[T any](recordType string, item T) *streams.Record {
+func JsonItemEncoder[T any](recordType string, item T) *Record {
 	var codec JsonCodec[T]
-	record := streams.NewRecord().WithRecordType(recordType)
+	record := NewRecord().WithRecordType(recordType)
 	codec.Encode(record.ValueWriter(), item)
 	return record
 }
@@ -57,9 +56,9 @@ func JsonItemEncoder[T any](recordType string, item T) *streams.Record {
 //
 //	entry := codec.JsonChangeLogEntryEncoder("myType", myItem)
 //	entry.WriteKeyString(myItem.Key)
-func JsonChangeLogEntryEncoder[T any](entryType string, item T) streams.ChangeLogEntry {
+func JsonChangeLogEntryEncoder[T any](entryType string, item T) ChangeLogEntry {
 	var codec JsonCodec[T]
-	cle := streams.NewChangeLogEntry().WithEntryType(entryType)
+	cle := NewChangeLogEntry().WithEntryType(entryType)
 	codec.Encode(cle.ValueWriter(), item)
 	return cle
 }
