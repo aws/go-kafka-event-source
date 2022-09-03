@@ -42,8 +42,16 @@ type Number interface {
 	Signed | Unsigned | Float
 }
 
+// A generic version of math.Min.
+func Min[T Number](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // A generic version of math.Min with the added bonus of accepting more than 2 arguments.
-func Min[T Number](min T, vals ...T) T {
+func MinN[T Number](min T, vals ...T) T {
 	for _, v := range vals {
 		if v < min {
 			min = v
@@ -52,8 +60,16 @@ func Min[T Number](min T, vals ...T) T {
 	return min
 }
 
+// A generic version of math.Max.
+func Max[T Number](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // A generic version of math.Max with the added bonus of accepting more than 2 arguments.
-func Max[T Number](max T, vals ...T) T {
+func MaxN[T Number](max T, vals ...T) T {
 	for _, v := range vals {
 		if v > max {
 			max = v

@@ -48,7 +48,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 	source := eventSource.source
 
 	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.ChangeLogTopicName())
-	producerPool = newEOSProducerPool[T](source.stateCluster(), cl, 3, 100, 10000, 1)
+	producerPool = newEOSProducerPool[T](source.stateCluster(), cl, eventSource.source.EosConfig)
 
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,

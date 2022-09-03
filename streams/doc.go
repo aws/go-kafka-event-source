@@ -49,7 +49,7 @@ GKES provides the mechanisms to query StateStores via Interjections. This mechan
 
 # Interjections
 
-For this familiar with thw Kafka Streams API, GKES provides for stream Punctuators, but we call them `Interjections` (because it sounds cool).
+For this familiar with thw Kafka Streams API, GKES provides for stream `Punctuators“, but we call them `Interjections` (because it sounds cool).
 Interjections allow you to insert actions into your EventSource at specicifed interval per partition assigned via [streams.EventSource.ScheduleInterjection],
 or at any time via [streams.EventSource.Interject]. This is useful for bookeeping activities, aggregated metric production or
 even error handling. Interjections have full access to the StateStore associated with an EventSource and can interact with output topics
@@ -75,15 +75,15 @@ There are caveats to asynchronous processing. [TODO: explanation of caveats]
 A Kafka transaction is a powerful tool which allows for Exactly Once Semantics (EOS) by linking a consumer offset commit to one or more records
 that are being produced by your application (a StateStore record for example). The history of Kafka EOS is a long and complicated one with varied degrees of performance and efficiency.
 
-Early iterations required on producer transaction per consumer partition, which was very ineffiecient as Topic with 1000 partitions would also require 1000 clients in order to provide EOS.
+Early iterations required one producer transaction per consumer partition, which was very ineffiecient as Topic with 1000 partitions would also require 1000 clients in order to provide EOS.
 This has since been addressed, but depending on client implementations, there is a high risk of running into "producer fenced" errors as well as reduced throughput.
 
 In a traditional Java Kafka Streams application, transactions are committed according to the auto-commit frequency, which defaults to 100ms. This means that your application will only produce
 readable records every 100ms per partition. The effect of this is that no matter what you do, your tail latency will be at least 100ms and downstream consumers will receive records in bursts
 rather than a steady stream. For many use cases, this is unaceptable.
 
-GKES solves this issue by using a *configurable* transactional producer pool and a type of "Nagle's algorithm". Uncommitted offsets are added to the transaction pool in sequence.
-Once a producer has reach its record limit, or enough time has elapsed (5ms by default), the head transaction will wait for any incomplete events to finsh, then flush and commit.
+GKES solves this issue by using a configurable transactional producer pool and a type of "Nagle's algorithm". Uncommitted offsets are added to the transaction pool in sequence.
+Once a producer has reach its record limit, or enough time has elapsed (10ms by default), the head transaction will wait for any incomplete events to finsh, then flush and commit.
 While this transaction is committing, GKES continues to process events and optimistically begins a new transaction and produces records on the next
 producer in pool. Since trasnaction produce in sequence, there is no danger of commit offset overlap or duplicate message processing in the case of a failure.
 

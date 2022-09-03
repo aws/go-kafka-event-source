@@ -101,6 +101,11 @@ type Source struct {
 		consumes resources and provides no benefit.
 	*/
 	CommitOffsets bool
+	/*
+		The config used for the eos producer pool. If empty, [DefaultEosConfig] is used. If an EventSource is initialized with an invalid
+		[EosConfig], the application will panic.
+	*/
+	EosConfig EosConfig
 }
 
 type Cluster interface {

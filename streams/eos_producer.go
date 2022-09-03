@@ -19,8 +19,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+const (
+	noPendingDuration = time.Minute
 )
 
 // a container that allows to know who produced the records
@@ -36,8 +41,7 @@ type eosProducerPool[T any] struct {
 	onDeck            *producerNode[T]
 	commitQueue       chan *producerNode[T]
 	signal            chan struct{}
-	maxBatchSize      int
-	minBatchSize      int
+	cfg               EosConfig
 	producerNodes     []*producerNode[T]
 	flushTimer        *time.Ticker
 	root              *EventContext[T]
@@ -47,23 +51,21 @@ type eosProducerPool[T any] struct {
 	cluster           Cluster
 }
 
-const (
-	noPendingDuration = time.Minute
-	pendingDuration   = 10 * time.Millisecond
-)
-
-func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, poolSize, minBatchSize, maxBatchSize, pendingTxns int) *eosProducerPool[T] {
+func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, cfg EosConfig) *eosProducerPool[T] {
+	if cfg.IsZero() {
+		cfg = DefaultEosConfig
+	}
+	cfg.validate()
 	pp := &eosProducerPool[T]{
-		producerNodeQueue: make(chan *producerNode[T], poolSize),
-		commitQueue:       make(chan *producerNode[T], pendingTxns),
-		minBatchSize:      minBatchSize,
-		maxBatchSize:      maxBatchSize,
+		cfg:               DefaultEosConfig,
+		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
+		commitQueue:       make(chan *producerNode[T], cfg.PendingTxnCount),
 		signal:            make(chan struct{}, 1),
-		producerNodes:     make([]*producerNode[T], 0, poolSize),
+		producerNodes:     make([]*producerNode[T], 0, cfg.PoolSize),
 		flushTimer:        time.NewTicker(noPendingDuration),
 		cluster:           cluster,
 	}
-	for i := 0; i < poolSize; i++ {
+	for i := 0; i < cfg.PoolSize; i++ {
 		p := newProducerNode[T](cluster, commitLog)
 		pp.producerNodes = append(pp.producerNodes, p)
 		pp.producerNodeQueue <- p
@@ -112,10 +114,10 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 
 		// off to the races
 		if ec.trySetProducer(pp.onDeck) {
-			if len(pp.onDeck.eventContexts) > 100 {
+			if len(pp.onDeck.eventContexts) > pp.cfg.MinBatchSize {
 				pp.tryFlush()
 			} else if len(pp.onDeck.eventContexts) == 1 {
-				pp.flushTimer.Reset(pendingDuration)
+				pp.flushTimer.Reset(pp.cfg.BatchDelay)
 			}
 		}
 	}
@@ -134,10 +136,7 @@ func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 }
 
 func (pp *eosProducerPool[T]) shouldForceFlush() bool {
-	// disabling this check for now as it causes a deadlock when using async event completions
-	// return false
-
-	return len(pp.onDeck.eventContexts) == pp.maxBatchSize || len(pp.onDeck.recordsToProduce) >= pp.maxBatchSize
+	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) == pp.cfg.MaxBatchSize
 }
 
 func (pp *eosProducerPool[T]) tryFlush() {
@@ -157,7 +156,7 @@ func (pp *eosProducerPool[T]) tryFlush() {
 			// we have pending items, try again in 5ms
 			// if new items come in during this interval, this timer may get reset
 			// and the flush proces will begin again
-			pp.flushTimer.Reset(pendingDuration)
+			pp.flushTimer.Reset(pp.cfg.BatchDelay)
 		}
 	} else {
 		// we don't have pending items, no reason to burn CPU, set the timer to an hour
