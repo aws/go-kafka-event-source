@@ -18,6 +18,26 @@ import (
 	"time"
 )
 
+/*
+EosDiagarm
+
+	 On-Deck Txn              Pending Txn Channel          Commit Go-Routine
+	┌───────────┐             ┌─────────────────┐          ┌──────────────────────────────────┐
+	│ EventCtx  │             │                 │          │                                  │
+	│ Offset: 7 │             │  ┌───────────┐  │          │  ┌───────────┐                   │
+	├───────────┤             │  │ EventCtx  │  │          │  │ EventCtx  │  1: Receive Event │
+	│ EventCtx  │             │  │ Offset: 4 │  │          │  │ Offset: 1 │                   │
+	│ Offset: 8 │             │  ├───────────┤  │          │  ├───────────┤  2: Flush Records │
+	├───────────┼────────────►│  │ EventCtx  │  ├─────────►│  │ EventCtx  │                   │
+	│ EventCtx  │             │  │ Offset: 5 │  │          │  │ Offset: 2 │  3: Commit        │
+	│ Offset: 9 │             │  ├───────────┤  │          │  ├───────────┤                   │
+	└───────────┘             │  │ EventCtx  │  │          │  │ EventCtx  │                   │
+	      ▲                   │  │ Offset: 6 │  │          │  │ Offset: 3 │                   │
+	      │                   │  └───────────┘  │          │  └───────────┘                   │
+	      │                   │                 │          │                                  │
+	      │                   └─────────────────┘          └──────────────────────────────────┘
+	Incoming Events
+*/
 type EosConfig struct {
 	// PoolSize is the number of transactional producer clients in the pool.
 	PoolSize int
@@ -30,10 +50,13 @@ type EosConfig struct {
 	MaxBatchSize int
 	// The maximum amount of time to wait before commiting a transaction. Once this time has elapsed, the transaction will commit
 	// even if MinBatchSize has not been achieved. This number will be the tail latency of the consume/produce cycle during periods of low activity.
-	// Under high load, this setting has little effect. If this value is too low, there is a great loss in efficiency. The recommnded value is 10ms and the minimum allowed value is 1ms.
+	// Under high load, this setting has little impact unless set too low. If this value is too low, produce batch sizes will be extremely small a
+	// and Kafka will need to manage an excessive number of transactions.
+	// The recommnded value is 10ms and the minimum allowed value is 1ms.
 	BatchDelay time.Duration
 }
 
+// IsZero returns true if EosConfig is uninitialized, or all values equal zero. Used to determine whether the EventSource should fall back to [DefaultEosConfig].
 func (cfg EosConfig) IsZero() bool {
 	if cfg.PoolSize != 0 {
 		return false

@@ -186,7 +186,9 @@ type producerNode[T any] struct {
 	currentTopicParitions map[TopicPartition]*EventContext[T]
 	commitWaiter          sync.WaitGroup
 	partitionLock         sync.RWMutex
+	produceLock           sync.Mutex
 	firstEvent            time.Time
+	commiting             bool
 	// errs                  []error
 }
 
@@ -246,6 +248,14 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 }
 
 func (p *producerNode[T]) commit() error {
+
+	p.produceLock.Lock()
+	p.commiting = true
+	for _, rtp := range p.recordsToProduce {
+		p.doProduceRecord(rtp.eventContext, rtp.record)
+	}
+	p.produceLock.Unlock()
+
 	for _, ec := range p.eventContexts {
 		ec.waitUntilComplete()
 	}
@@ -274,6 +284,7 @@ func (p *producerNode[T]) commit() error {
 		p.clearRevokedState()
 		log.Errorf("commit error: %v", err)
 	}
+	p.commiting = false
 	p.commitWaiter.Done()
 	return err
 }
@@ -337,11 +348,20 @@ func (p *producerNode[T]) clearRevokedState() {
 }
 
 func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
+	p.produceLock.Lock()
 	p.recordsToProduce = append(p.recordsToProduce, recordAndEventContext[T]{
 		record:       record,
 		eventContext: ec,
 	})
+	shouldProduce := p.commiting
+	p.produceLock.Unlock()
 
+	if shouldProduce {
+		p.doProduceRecord(ec, record)
+	}
+}
+
+func (p *producerNode[T]) doProduceRecord(ec *EventContext[T], record *Record) {
 	p.client.Produce(context.TODO(), record.ToKafkaRecord(), func(r *kgo.Record, err error) {
 		if err != nil {
 			// TODO: proper way to handle producer errors
