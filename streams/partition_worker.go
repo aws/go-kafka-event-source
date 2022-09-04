@@ -128,6 +128,7 @@ func (pw *partitionWorker[T]) pushRecords() {
 		}
 	}
 }
+
 func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(), commitLog *eosCommitLog) {
 	elapsed := sincer{time.Now()}
 	// don't start consuming until this function returns
@@ -207,7 +208,7 @@ func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
 	if pw.isRevoked() {
 		return
 	}
-	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw.asyncCompleter)
+	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw)
 	if pw.eosProducer != nil {
 		pw.eosProducer.addEventContext(ec)
 	}

@@ -123,23 +123,21 @@ func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, err
 	})
 }
 
-func (ec *EventContext[T]) trySetProducer(p *producerNode[T]) bool {
-	ec.produceLock.Lock()
-	defer ec.produceLock.Unlock()
-	if ec.isRevoked() {
-		// this event was buffered in the eosProducer, but the partition has since been revoked
-		// let's drop this so as not to add to rebalance latency
-		ec.rejected = true
-		return false
-	}
-
-	ec.producer = p
-	p.addEventContext(ec)
+func (ec *EventContext[T]) flushPendingRecords() {
 	for _, cont := range ec.pendingRecords {
 		ec.producer.produceRecord(ec, cont.record)
 	}
 	ec.pendingRecords = []recordContainer{}
-	return true
+}
+
+func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
+	ec.produceLock.Lock()
+	// an event context can only ever have 1 producer
+	if ec.producer == nil {
+		ec.producer = p
+		ec.flushPendingRecords()
+	}
+	ec.produceLock.Unlock()
 }
 
 // Return the raw input record for this event or an uninitialized record and false if the EventContect represents an Interjections
@@ -175,13 +173,13 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 	return ec
 }
 
-func newInterjectionContext[T any](ctx context.Context, topicPartition TopicPartition, changeLog *changeLogData[T], ac asyncCompleter[T]) *EventContext[T] {
+func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog *changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
 		ctx:            ctx,
 		topicPartition: topicPartition,
 		isInterjection: true,
 		changeLog:      changeLog,
-		asynCompleter:  ac,
+		asynCompleter:  pw.asyncCompleter,
 	}
 	ec.wg.Add(1)
 	return ec

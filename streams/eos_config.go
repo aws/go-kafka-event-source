@@ -23,7 +23,7 @@ EosDiagarm
 
 	 On-Deck Txn              Pending Txn Channel          Commit Go-Routine
 	┌───────────┐             ┌─────────────────┐          ┌──────────────────────────────────┐
-	│ EventCtx  │             │                 │          │                                  │
+	│ EventCtx  │             │  Pending Txn(s) │          │  Committing Txn                  │
 	│ Offset: 7 │             │  ┌───────────┐  │          │  ┌───────────┐                   │
 	├───────────┤             │  │ EventCtx  │  │          │  │ EventCtx  │  1: Receive Event │
 	│ EventCtx  │             │  │ Offset: 4 │  │          │  │ Offset: 1 │                   │
@@ -34,9 +34,8 @@ EosDiagarm
 	└───────────┘             │  │ EventCtx  │  │          │  │ EventCtx  │                   │
 	      ▲                   │  │ Offset: 6 │  │          │  │ Offset: 3 │                   │
 	      │                   │  └───────────┘  │          │  └───────────┘                   │
-	      │                   │                 │          │                                  │
 	      │                   └─────────────────┘          └──────────────────────────────────┘
-	Incoming Events
+	Incoming EventCtx
 */
 type EosConfig struct {
 	// PoolSize is the number of transactional producer clients in the pool.
@@ -48,7 +47,7 @@ type EosConfig struct {
 	// MaxBatchSize is the maximum number of events or records (whichever is greater) for a transaction before it will stop accepting new events.
 	// Once a transaction reaches MaxBatchSize, it  ust be commited.
 	MaxBatchSize int
-	// The maximum amount of time to wait before commiting a transaction. Once this time has elapsed, the transaction will commit
+	// The maximum amount of time to wait before committing a transaction. Once this time has elapsed, the transaction will commit
 	// even if MinBatchSize has not been achieved. This number will be the tail latency of the consume/produce cycle during periods of low activity.
 	// Under high load, this setting has little impact unless set too low. If this value is too low, produce batch sizes will be extremely small a
 	// and Kafka will need to manage an excessive number of transactions.

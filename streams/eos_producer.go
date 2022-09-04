@@ -28,6 +28,35 @@ const (
 	noPendingDuration = time.Minute
 )
 
+type partitionOwners[T any] struct {
+	owners map[TopicPartition]*producerNode[T]
+	mux    *sync.Mutex
+}
+
+func (po partitionOwners[T]) set(tp TopicPartition, pn *producerNode[T]) {
+	po.mux.Lock()
+	po.owners[tp] = pn
+	po.mux.Unlock()
+}
+
+func (po partitionOwners[T]) conditionallyUpdate(tp TopicPartition, pn *producerNode[T]) (wasNil bool, wasEqual bool) {
+	po.mux.Lock()
+	if existing, ok := po.owners[tp]; !ok {
+		wasNil = true
+		po.owners[tp] = pn
+	} else {
+		wasEqual = existing == pn
+	}
+	po.mux.Unlock()
+	return
+}
+
+func (po partitionOwners[T]) clear(tp TopicPartition) {
+	po.mux.Lock()
+	delete(po.owners, tp)
+	po.mux.Unlock()
+}
+
 // a container that allows to know who produced the records
 // needed for txn error conditions while there are revoked partitions
 // allows us to filter recordsToProduce on a retry and exclude partitions that have been revoked
@@ -46,6 +75,7 @@ type eosProducerPool[T any] struct {
 	flushTimer        *time.Ticker
 	root              *EventContext[T]
 	tail              *EventContext[T]
+	partitionOwners   partitionOwners[T]
 	sllLock           sync.Mutex // lock for out singly linked list of EventContexts
 	startTime         time.Time
 	cluster           Cluster
@@ -62,11 +92,15 @@ func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, 
 		commitQueue:       make(chan *producerNode[T], cfg.PendingTxnCount),
 		signal:            make(chan struct{}, 1),
 		producerNodes:     make([]*producerNode[T], 0, cfg.PoolSize),
-		flushTimer:        time.NewTicker(noPendingDuration),
-		cluster:           cluster,
+		partitionOwners: partitionOwners[T]{
+			owners: make(map[TopicPartition]*producerNode[T]),
+			mux:    new(sync.Mutex),
+		},
+		flushTimer: time.NewTicker(noPendingDuration),
+		cluster:    cluster,
 	}
 	for i := 0; i < cfg.PoolSize; i++ {
-		p := newProducerNode[T](cluster, commitLog)
+		p := newProducerNode(cluster, commitLog, pp.partitionOwners)
 		pp.producerNodes = append(pp.producerNodes, p)
 		pp.producerNodeQueue <- p
 	}
@@ -112,14 +146,29 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 		ec.next = nil
 		pp.sllLock.Unlock()
 
-		// off to the races
-		if ec.trySetProducer(pp.onDeck) {
-			if len(pp.onDeck.eventContexts) > pp.cfg.MinBatchSize {
-				pp.tryFlush()
-			} else if len(pp.onDeck.eventContexts) == 1 {
-				pp.flushTimer.Reset(pp.cfg.BatchDelay)
-			}
+		if ec.isRevoked() {
+			return
 		}
+
+		// this is the point of no return
+		// if a topic partition is revoked, we will have to wait for this event to finish
+		pp.onDeck.addEventContext(ec)
+
+		if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.TopicPartition(), pp.onDeck); wasNil {
+			// this partition is not owned by the committing producer
+			// update all of the event contexts for this partition only
+			pp.onDeck.setProducerFor(ec.TopicPartition())
+		} else if wasEqual {
+			// this was the correct producer, no need to update all and create an n^2 issue
+			ec.setProducer(pp.onDeck)
+		}
+		// off to the races
+		if pp.shouldTryFlush() {
+			pp.tryFlush()
+		} else if len(pp.onDeck.eventContexts) == 1 {
+			pp.flushTimer.Reset(pp.cfg.BatchDelay)
+		}
+
 	}
 }
 
@@ -133,6 +182,10 @@ func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 		}
 
 	}
+}
+
+func (pp *eosProducerPool[T]) shouldTryFlush() bool {
+	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) >= pp.cfg.MinBatchSize
 }
 
 func (pp *eosProducerPool[T]) shouldForceFlush() bool {
@@ -184,15 +237,16 @@ type producerNode[T any] struct {
 	recordsToProduce      []recordAndEventContext[T]
 	eventContexts         []*EventContext[T]
 	currentTopicParitions map[TopicPartition]*EventContext[T]
+	partitionOwners       partitionOwners[T]
 	commitWaiter          sync.WaitGroup
 	partitionLock         sync.RWMutex
 	produceLock           sync.Mutex
 	firstEvent            time.Time
-	commiting             bool
+	committing            bool
 	// errs                  []error
 }
 
-func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog) *producerNode[T] {
+func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog, partitionOwners partitionOwners[T]) *producerNode[T] {
 	client, err := NewClient(
 		cluster,
 		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
@@ -205,6 +259,7 @@ func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog) *pr
 	return &producerNode[T]{client: client,
 		commitLog:             commitLog,
 		currentTopicParitions: make(map[TopicPartition]*EventContext[T]),
+		partitionOwners:       partitionOwners,
 	}
 }
 
@@ -226,7 +281,6 @@ func (p *producerNode[T]) revokePartition(tp TopicPartition) {
 func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 	// if ec is an Interjection, offset will be -1
 	offset := ec.Offset()
-
 	p.partitionLock.Lock()
 	if offset > 0 {
 		p.currentTopicParitions[ec.TopicPartition()] = ec
@@ -247,15 +301,24 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 	p.eventContexts = append(p.eventContexts, ec)
 }
 
-func (p *producerNode[T]) commit() error {
-
-	p.produceLock.Lock()
-	p.commiting = true
-	for _, rtp := range p.recordsToProduce {
-		p.doProduceRecord(rtp.eventContext, rtp.record)
+func (p *producerNode[T]) setProducerFor(tp TopicPartition) {
+	for _, ec := range p.eventContexts {
+		if ec.TopicPartition() == tp {
+			ec.setProducer(p)
+		}
 	}
-	p.produceLock.Unlock()
+}
 
+func (p *producerNode[T]) commit() error {
+	for tp := range p.currentTopicParitions {
+		p.partitionOwners.set(tp, p)
+	}
+	// we need to set the active producer for TopicPartitions in this producerNode
+	// if they are unset
+	for _, ec := range p.eventContexts {
+		ec.setProducer(p)
+	}
+	// now wait for all events to finish processing
 	for _, ec := range p.eventContexts {
 		ec.waitUntilComplete()
 	}
@@ -284,7 +347,7 @@ func (p *producerNode[T]) commit() error {
 		p.clearRevokedState()
 		log.Errorf("commit error: %v", err)
 	}
-	p.commiting = false
+	p.committing = false
 	p.commitWaiter.Done()
 	return err
 }
@@ -296,11 +359,12 @@ func (p *producerNode[T]) clearState() {
 	for i := range p.recordsToProduce {
 		p.recordsToProduce[i] = recordAndEventContext[T]{}
 	}
-	p.partitionLock.Lock()
+
 	for tp := range p.currentTopicParitions {
+		p.partitionOwners.clear(tp)
 		delete(p.currentTopicParitions, tp)
 	}
-	p.partitionLock.Unlock()
+
 	p.eventContexts = p.eventContexts[0:0]
 	p.recordsToProduce = p.recordsToProduce[0:0]
 }
@@ -314,7 +378,7 @@ func (p *producerNode[T]) clearRevokedState() {
 	// we'll end up looping through p.eventContexts twice, but it's better not to reallocate
 	// if not necessary, so this is likely more efficient most of the time
 	revokedPartitions := make(map[TopicPartition]struct{})
-	p.partitionLock.Lock()
+
 	for i, ec := range p.eventContexts {
 		if ec.isRevoked() {
 			revokedPartitions[ec.TopicPartition()] = struct{}{}
@@ -322,7 +386,6 @@ func (p *producerNode[T]) clearRevokedState() {
 			p.eventContexts[i] = nil
 		}
 	}
-	p.partitionLock.Unlock()
 
 	if len(revokedPartitions) > 0 {
 		// we have revocations, remove them from recordsToProduce so if we retry, we are not breaking eos
@@ -353,15 +416,8 @@ func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
 		record:       record,
 		eventContext: ec,
 	})
-	shouldProduce := p.commiting
 	p.produceLock.Unlock()
 
-	if shouldProduce {
-		p.doProduceRecord(ec, record)
-	}
-}
-
-func (p *producerNode[T]) doProduceRecord(ec *EventContext[T], record *Record) {
 	p.client.Produce(context.TODO(), record.ToKafkaRecord(), func(r *kgo.Record, err error) {
 		if err != nil {
 			// TODO: proper way to handle producer errors
