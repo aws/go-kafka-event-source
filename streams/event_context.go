@@ -21,6 +21,10 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+type pendingRecords struct {
+	records []*Record
+}
+
 // Contains information about the current event. Is passed to EventProcessors and Interjections
 type EventContext[T any] struct {
 	// we're going to keep a reference to the partition worker context
@@ -29,14 +33,13 @@ type EventContext[T any] struct {
 	producer       *producerNode[T]
 	changeLog      *changeLogData[T]
 	next           *EventContext[T]
-	pendingRecords []recordContainer
+	pendingRecords *pendingRecords
 	input          IncomingRecord
 	asynCompleter  asyncCompleter[T]
 	produceLock    sync.Mutex
 	wg             sync.WaitGroup
 	topicPartition TopicPartition
 	isInterjection bool
-	rejected       bool
 }
 
 func (ec *EventContext[T]) waitUntilComplete() {
@@ -71,18 +74,12 @@ func (ec *EventContext[T]) Forward(records ...*Record) {
 	defer ec.produceLock.Unlock()
 	for _, record := range records {
 		if ec.producer == nil {
-			ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, false})
+			ec.pendingRecords.records = append(ec.pendingRecords.records, record)
 		} else {
 			ec.producer.produceRecord(ec, record)
 		}
 	}
 
-}
-
-func (ec *EventContext[T]) isRejected() bool {
-	ec.produceLock.Lock()
-	defer ec.produceLock.Unlock()
-	return ec.rejected
 }
 
 // Forwards records to the transactional producer for your EventSource. When you add an item to your StateStore,
@@ -100,7 +97,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 			if ec.producer != nil {
 				ec.producer.produceRecord(ec, record)
 			} else {
-				ec.pendingRecords = append(ec.pendingRecords, recordContainer{record, true})
+				ec.pendingRecords.records = append(ec.pendingRecords.records, record)
 			}
 		} else {
 			log.Warnf("EventContext.RecordChange was called but consumer is not stateful")
@@ -113,10 +110,6 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 // regardless of error state. `finalize` does no accept any arguments, so you're callback should encapsulate
 // any pertinent data needed for processing. See [streams.AsyncJobScheduler] for an example.
 func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, error)) {
-	if ec.isRejected() {
-		// don't bother trying to complete this task. It will only cause confusion
-		return
-	}
 	ec.asynCompleter.asyncComplete(asyncJob[T]{
 		ctx:      ec,
 		finalize: finalize,
@@ -124,10 +117,11 @@ func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, err
 }
 
 func (ec *EventContext[T]) flushPendingRecords() {
-	for _, cont := range ec.pendingRecords {
-		ec.producer.produceRecord(ec, cont.record)
+	for _, record := range ec.pendingRecords.records {
+		ec.producer.produceRecord(ec, record)
 	}
-	ec.pendingRecords = []recordContainer{}
+	releasePendingRecords(ec.pendingRecords)
+	ec.pendingRecords = nil
 }
 
 func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
@@ -154,9 +148,22 @@ func (ec *EventContext[T]) complete() {
 	ec.wg.Done()
 }
 
-type recordContainer struct {
-	record   *Record
-	reusable bool
+var pendingRecordPool = sync.Pool{
+	New: func() any {
+		return new(pendingRecords)
+	},
+}
+
+func borrowPendingRecords() *pendingRecords {
+	return pendingRecordPool.Get().(*pendingRecords)
+}
+
+func releasePendingRecords(pending *pendingRecords) {
+	for i := range pending.records {
+		pending.records[i] = nil
+	}
+	pending.records = pending.records[0:0]
+	pendingRecordPool.Put(pending)
 }
 
 func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog *changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
@@ -168,6 +175,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 		input:          input,
 		isInterjection: false,
 		asynCompleter:  pw.asyncCompleter,
+		pendingRecords: borrowPendingRecords(),
 	}
 	ec.wg.Add(1)
 	return ec
@@ -180,6 +188,7 @@ func newInterjectionContext[T StateStore](ctx context.Context, topicPartition To
 		isInterjection: true,
 		changeLog:      changeLog,
 		asynCompleter:  pw.asyncCompleter,
+		pendingRecords: borrowPendingRecords(),
 	}
 	ec.wg.Add(1)
 	return ec

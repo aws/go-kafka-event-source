@@ -58,28 +58,6 @@ func (b *asyncBatch[S, K, V]) add(item BatchItem[S, K, V]) {
 	b.items = append(b.items, item)
 }
 
-func (b *asyncBatch[S, K, V]) validItems() []BatchItem[S, K, V] {
-	hasRejected := false
-	// delay allocating a new array until we are sure there are invalid items
-	// since this should be a rare occasion (only during a rebalance)
-	for _, item := range b.items {
-		if item.eventContext.isRejected() {
-			hasRejected = true
-			break
-		}
-	}
-	if !hasRejected {
-		return b.items
-	}
-	validItems := make([]BatchItem[S, K, V], 0)
-	for _, item := range b.items {
-		if !item.eventContext.isRejected() {
-			validItems = append(validItems, item)
-		}
-	}
-	return validItems
-}
-
 func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
 	var empty BatchItem[S, K, V]
 	for i, item := range b.items {
@@ -180,7 +158,7 @@ func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[S, 
 }
 
 func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[S, K, V]) {
-	ab.executor(batch.validItems()) // these items may be stale, trim this list down based on EventContext state
+	ab.executor(batch.items)
 	ab.mux.Lock()
 	ab.executingCount--
 	// TODO: handle errors right here as this may effect other batches

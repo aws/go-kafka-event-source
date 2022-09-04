@@ -147,16 +147,16 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 		pp.sllLock.Unlock()
 
 		if ec.isRevoked() {
+			// if we're revoked, don't even add this to the onDeck producer
 			return
 		}
 
-		// this is the point of no return
-		// if a topic partition is revoked, we will have to wait for this event to finish
+		// the point of no return. this event will be processed evcen if the partition is later revoked
 		pp.onDeck.addEventContext(ec)
-
 		if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.TopicPartition(), pp.onDeck); wasNil {
-			// this partition is not owned by the committing producer
-			// update all of the event contexts for this partition only
+			// this partition is not owned by the committing producer, so it is safe to start producing.
+			// update all of the event contexts for this partition only.
+			// once setProducer is called, any buffered records for this event will now be sent to the kafka broker.
 			pp.onDeck.setProducerFor(ec.TopicPartition())
 		} else if wasEqual {
 			// this was the correct producer, no need to update all and create an n^2 issue
