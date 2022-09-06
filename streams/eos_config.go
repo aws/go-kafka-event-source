@@ -42,13 +42,13 @@ type EosConfig struct {
 	PoolSize int
 	// The maximum number of pending transactions to be allowed in the pool at any given point in time.
 	PendingTxnCount int
-	// MinBatchSize is the target number of events or records (whichever is greater) for a transaction before a commit is attempted.
-	MinBatchSize int
+	// TargetBatchSize is the target number of events or records (whichever is greater) for a transaction before a commit is attempted.
+	TargetBatchSize int
 	// MaxBatchSize is the maximum number of events or records (whichever is greater) for a transaction before it will stop accepting new events.
 	// Once a transaction reaches MaxBatchSize, it  ust be commited.
 	MaxBatchSize int
 	// The maximum amount of time to wait before committing a transaction. Once this time has elapsed, the transaction will commit
-	// even if MinBatchSize has not been achieved. This number will be the tail latency of the consume/produce cycle during periods of low activity.
+	// even if TargetBatchSize has not been achieved. This number will be the tail latency of the consume/produce cycle during periods of low activity.
 	// Under high load, this setting has little impact unless set too low. If this value is too low, produce batch sizes will be extremely small a
 	// and Kafka will need to manage an excessive number of transactions.
 	// The recommnded value is 10ms and the minimum allowed value is 1ms.
@@ -63,7 +63,7 @@ func (cfg EosConfig) IsZero() bool {
 	if cfg.PendingTxnCount != 0 {
 		return false
 	}
-	if cfg.MinBatchSize != 0 {
+	if cfg.TargetBatchSize != 0 {
 		return false
 	}
 	if cfg.MaxBatchSize != 0 {
@@ -82,7 +82,7 @@ func (cfg EosConfig) validate() {
 	if cfg.PendingTxnCount < 1 {
 		panic("EosConfig.PendingTxnCount is less than 1")
 	}
-	if cfg.MinBatchSize < 1 {
+	if cfg.TargetBatchSize < 1 {
 		panic("EosConfig.MinBatchSize is less than 1")
 	}
 	if cfg.MaxBatchSize < 1 {
@@ -91,15 +91,21 @@ func (cfg EosConfig) validate() {
 	if cfg.BatchDelay < time.Millisecond {
 		panic("EosConfig.BatchDelay is less than 1ms")
 	}
-	if cfg.MinBatchSize >= cfg.MaxBatchSize {
+	if cfg.TargetBatchSize > cfg.MaxBatchSize {
 		panic("EosConfig.MinBatchSize >= EosConfig.MaxBatchSize")
 	}
 }
 
+const DefaultPoolSize = 3
+const DefaultPendingTxnCount = 1
+const DefaultTargetBatchSize = 100
+const DefaultMaxBatchSize = 10000
+const DefaultBatchDelay = 10 * time.Millisecond
+
 var DefaultEosConfig = EosConfig{
-	PoolSize:        3,
-	PendingTxnCount: 1,
-	MinBatchSize:    100,
-	MaxBatchSize:    10000,
-	BatchDelay:      10 * time.Millisecond,
+	PoolSize:        DefaultPoolSize,
+	PendingTxnCount: DefaultPendingTxnCount,
+	TargetBatchSize: DefaultTargetBatchSize,
+	MaxBatchSize:    DefaultMaxBatchSize,
+	BatchDelay:      DefaultBatchDelay,
 }

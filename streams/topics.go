@@ -80,15 +80,24 @@ func (tps TopicPartitionSet) Items() []TopicPartition {
 }
 
 type Source struct {
-	GroupId             string
-	Topic               string
-	NumPartitions       int
-	ReplicationFactor   int
-	MinInSync           int
+	// The group id for the underlying Kafka consumer group.
+	GroupId string
+	// The Kafka Topic to consume
+	Topic string
+	// The desired number of partitions for Topic.
+	NumPartitions int
+	// The desired replication factor for Topic. Defaults to 1.
+	ReplicationFactor int
+	// The desired min-insync-replicas for Topic. Defaults to 1.
+	MinInSync int
+	// The number of Kafka partitions to use for the applications commit log. Defaults to 5 if unset.
 	CommitLogPartitions int
-	SourceCluster       Cluster
-	StateCluster        Cluster
-	BalanceStrategies   []BalanceStrategy
+	// The Kafka cluster on which Topic resides.
+	SourceCluster Cluster
+	// StateCluster is the Kafka cluster on which the commit log and the StateStore topic resides. If left unset (recommended), defaults to SourceCluster.
+	StateCluster Cluster
+	// The consumer rebalance strategies to use for the underlying Kafka consumer group.
+	BalanceStrategies []BalanceStrategy
 	/*
 		CommitOffsets should be set to true
 		if you are migrating from a traditional consumer group.
@@ -108,31 +117,44 @@ type Source struct {
 	EosConfig EosConfig
 }
 
+// An interface for implementing a resusable Kafka client configuration.
+// TODO: document reserved options
 type Cluster interface {
+	// Returns the list of kgo.Opt(s) that will be used whenever a connection is made to this cluster.
+	// At minimum, it should return the kgo.SeedBrokers() option.
 	Config() ([]kgo.Opt, error)
 }
 
+// A [Cluster] implementation useful for local development/testing. Establishes a plain text connection to a Kafka cluster.
+// For a more advanced example, see [github.com/aws/go-kafka-event-source/msk].
+//
+//	cluster := streams.SimpleCluster([]string{"127.0.0.1:9092"})
 type SimpleCluster []string
 
+// Returns []kgo.Opt{kgo.SeedBrokers(sc...)}
 func (sc SimpleCluster) Config() ([]kgo.Opt, error) {
 	return []kgo.Opt{kgo.SeedBrokers(sc...)}, nil
 }
 
+// NewClient creates a kgo.Client from the options retuned from the provided [Cluster] and addtional `options`.
+// Used internally and exposed for convenience.
 func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 	configOptions := []kgo.Opt{kgo.WithLogger(kgoLogger), kgo.ProducerBatchCompression(kgo.NoCompression())}
-	opts, err := cluster.Config()
+	clusterOpts, err := cluster.Config()
 	if err != nil {
 		return nil, err
 	}
-	configOptions = append(configOptions, opts...)
+	configOptions = append(configOptions, clusterOpts...)
 	configOptions = append(configOptions, options...)
 	return kgo.NewClient(configOptions...)
 }
 
+// Returns the formatted topic name usewd for the commit log of Source
 func (s Source) CommitLogTopicNameForGroupId() string {
 	return fmt.Sprintf("gkes_commit_log_%s", s.GroupId)
 }
 
+// Returns the formatted topic name used for the change log ([StateStore]) of Source
 func (s Source) ChangeLogTopicName() string {
 	return fmt.Sprintf("gkes_change_log_%s_%s", s.Topic, s.GroupId)
 }

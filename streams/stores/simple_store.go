@@ -79,16 +79,17 @@ func (s *SimpleStore[T]) Delete(item T) (cle streams.ChangeLogEntry, ok bool) {
 	return
 }
 
-func (s *SimpleStore[T]) ReceiveChange(record streams.IncomingRecord) {
+func (s *SimpleStore[T]) ReceiveChange(record streams.IncomingRecord) (err error) {
+	var item T
 	if len(record.Value()) == 0 {
 		keyedValue := keyedValue[T]{
 			key: string(record.Key()),
 		}
 		s.tree.Delete(&keyedValue)
-	} else {
-		item := streams.JsonItemDecoder[T](record)
+	} else if item, err = streams.JsonItemDecoder[T](record); err != nil {
 		s.tree.ReplaceOrInsert(&keyedValue[T]{key: item.Key(), value: item})
 	}
+	return
 }
 
 func (s *SimpleStore[T]) Revoked() {

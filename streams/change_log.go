@@ -32,7 +32,7 @@ var placeholder = []byte{1}
 type ChangeAttributes map[string][]byte
 
 type StateStore interface {
-	ReceiveChange(IncomingRecord)
+	ReceiveChange(IncomingRecord) error
 	Revoked()
 }
 

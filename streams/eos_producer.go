@@ -185,7 +185,7 @@ func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 }
 
 func (pp *eosProducerPool[T]) shouldTryFlush() bool {
-	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) >= pp.cfg.MinBatchSize
+	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) >= pp.cfg.TargetBatchSize
 }
 
 func (pp *eosProducerPool[T]) shouldForceFlush() bool {

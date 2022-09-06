@@ -81,7 +81,7 @@ func (cl *eosCommitLog) commitRecord(tp TopicPartition, offset int64) *Record {
 	return record
 }
 
-func (cl *eosCommitLog) ReceiveChange(record IncomingRecord) {
+func (cl *eosCommitLog) ReceiveChange(record IncomingRecord) error {
 	if record.isMarkerRecord() {
 		cl.closeSyncRequest(string(record.Value()))
 	} else {
@@ -91,6 +91,7 @@ func (cl *eosCommitLog) ReceiveChange(record IncomingRecord) {
 		cl.watermarks[tp] = offset
 		cl.mux.Unlock()
 	}
+	return nil
 }
 
 func (cl *eosCommitLog) Revoked() {}

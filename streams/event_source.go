@@ -27,26 +27,28 @@ import (
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
 type EventSource[T StateStore] struct {
-	root              *eventProcessorWrapper[T]
-	tail              *eventProcessorWrapper[T]
-	stateStoreFactory StateStoreFactory[T]
-	defaultProcessor  EventProcessor[T, IncomingRecord]
-	consumer          *eventSourceConsumer[T]
-	interjections     []interjection[T]
-	source            Source
-	runStatus         sak.RunStatus
-	done              chan struct{}
+	root                        *eventProcessorWrapper[T]
+	tail                        *eventProcessorWrapper[T]
+	stateStoreFactory           StateStoreFactory[T]
+	defaultProcessor            EventProcessor[T, IncomingRecord]
+	consumer                    *eventSourceConsumer[T]
+	interjections               []interjection[T]
+	source                      Source
+	deserializationErrorHandler ErrorHandler[T]
+	runStatus                   sak.RunStatus
+	done                        chan struct{}
 }
 
 // Create an EventSource.
 // defaultProcessor will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header
 func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord]) (*EventSource[T], error) {
 	es := &EventSource[T]{
-		defaultProcessor:  defaultProcessor,
-		stateStoreFactory: stateStoreFactory,
-		source:            source,
-		runStatus:         sak.NewRunStatus(context.Background()),
-		done:              make(chan struct{}, 1),
+		defaultProcessor:            defaultProcessor,
+		stateStoreFactory:           stateStoreFactory,
+		source:                      source,
+		deserializationErrorHandler: DefaultDeserializationErrorHandler[T],
+		runStatus:                   sak.NewRunStatus(context.Background()),
+		done:                        make(chan struct{}, 1),
 	}
 	var err error
 	es.consumer, err = newEventSourceConsumer(es)
@@ -281,14 +283,14 @@ func (es *EventSource[T]) handleEvent(ctx *EventContext[T], record IncomingRecor
 type StateStoreFactory[T StateStore] func(TopicPartition) T
 
 // A callback invoked when a new record has been received from the EventSource.
-type IncomingRecordDecoder[V any] func(IncomingRecord) V
+type IncomingRecordDecoder[V any] func(IncomingRecord) (V, error)
 
 // A callback invoked when a new record has been received from the EventSource, after it has been transformed via IncomingRecordTransformer.
 type EventProcessor[T any, V any] func(*EventContext[T], V) (ExecutionState, error)
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
 func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
-	ep := newEventProcessor(eventType, transformer, eventProcessor)
+	ep := newEventProcessorWrapper(eventType, transformer, eventProcessor, es.deserializationErrorHandler)
 	if es.root == nil {
 		es.root, es.tail = ep, ep
 	} else {
@@ -297,25 +299,52 @@ func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer Inco
 	}
 }
 
-// Wraps an EventProcessor with a function that decodes the record before invoking eventProcessor.
-type eventProcessorWrapper[T any] struct {
-	eventType string
-	exec      func(*EventContext[T], IncomingRecord) (ExecutionState, error)
-	next      *eventProcessorWrapper[T]
+type eventExecutor[T any] interface {
+	Exec(*EventContext[T], IncomingRecord) (ExecutionState, error)
 }
 
-func newEventProcessor[T any, V any](eventType string, decode IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V]) *eventProcessorWrapper[T] {
+// Wraps an EventProcessor with a function that decodes the record before invoking eventProcessor.
+// Doing some type gymnastics here.
+// We have 2 generic types declared here, but to have a eventProcessorWrapper[T,V], *next[T,X] would not work.
+// Golang generics do no yet allow for defining new type in struct method declarations, so we have a private interface
+// wrapped by a generic.
+type eventProcessorWrapper[T any] struct {
+	eventType     string
+	eventExecutor eventExecutor[T]
+	next          *eventProcessorWrapper[T]
+}
+
+type eventProcessorExecutor[T any, V any] struct {
+	process                    EventProcessor[T, V]
+	decode                     IncomingRecordDecoder[V]
+	handleDeserializationError ErrorHandler[T]
+}
+
+func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+	if event, err := epe.decode(record); err == nil {
+		return epe.process(ec, event)
+	} else {
+		if epe.handleDeserializationError(ec, record.RecordType(), err) == CompleteAndContinue {
+			return Complete, err
+		}
+		return Incomplete, err
+	}
+}
+
+func newEventProcessorWrapper[T any, V any](eventType string, decoder IncomingRecordDecoder[V],
+	eventProcessor EventProcessor[T, V], deserializationErrorHandler ErrorHandler[T]) *eventProcessorWrapper[T] {
 	return &eventProcessorWrapper[T]{
 		eventType: eventType,
-		// doing some type gymnastics here.
-		// we have 2 generic types declared here, but to have a eventProcessorWrapper[T,V], *next[T,X] would not work
-		// golang generics do no yet allow for defining new type in struct method declarations
-		// so we're relegated to exec being a closure. we could also use an interface, but don't want to pay the possible penalty
-		// that comes with invoking a method on an interface, it's a small penalty if any, but a closure works just as well
-		exec: func(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
-			return eventProcessor(ec, decode(record))
+		eventExecutor: &eventProcessorExecutor[T, V]{
+			process:                    eventProcessor,
+			decode:                     decoder,
+			handleDeserializationError: deserializationErrorHandler,
 		},
 	}
+}
+
+func (ep *eventProcessorWrapper[T]) exec(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+	return ep.eventExecutor.Exec(ec, record)
 }
 
 // process the record if records.recordType == eventProcessorWrapper.eventType, otherwise forward this record to the next processor.

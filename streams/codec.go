@@ -34,7 +34,7 @@ var defaultJson = jsoniter.ConfigCompatibleWithStandardLibrary
 //	// or standalone
 //	myDecoder := codec.JsonItemDecoder[myType]
 //	myItem := myDecoder(incomingRecord)
-func JsonItemDecoder[T any](record IncomingRecord) T {
+func JsonItemDecoder[T any](record IncomingRecord) (T, error) {
 	var codec JsonCodec[T]
 	return codec.Decode(record.Value())
 }
@@ -74,13 +74,13 @@ func (JsonCodec[T]) Encode(b *bytes.Buffer, t T) error {
 	return stream.Flush()
 }
 
-func (JsonCodec[T]) Decode(b []byte) T {
+func (JsonCodec[T]) Decode(b []byte) (T, error) {
 	iter := defaultJson.BorrowIterator(b)
 	defer defaultJson.ReturnIterator(iter)
 
 	var t T
 	iter.ReadVal(&t)
-	return t
+	return t, iter.Error
 }
 
 type stringCodec struct{}

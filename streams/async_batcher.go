@@ -22,21 +22,17 @@ import (
 )
 
 type BatchItem[S StateStore, K comparable, V any] struct {
-	eventContext *EventContext[S]
-	key          K
-	item         V
+	EventContext *EventContext[S]
+	Key          K
+	Item         V
 }
 
-func (bi BatchItem[S, K, V]) EventContext() *EventContext[S] {
-	return bi.eventContext
-}
-
-func (bi BatchItem[S, K, V]) Key() K {
-	return bi.key
-}
-
-func (bi BatchItem[S, K, V]) Item() V {
-	return bi.item
+func NewBatchItem[S StateStore, K comparable, V any](ec *EventContext[S], key K, item V) BatchItem[S, K, V] {
+	return BatchItem[S, K, V]{
+		EventContext: ec,
+		Key:          key,
+		Item:         item,
+	}
 }
 
 type BatchExecutor[S StateStore, K comparable, V any] func(batch []BatchItem[S, K, V])
@@ -61,7 +57,7 @@ func (b *asyncBatch[S, K, V]) add(item BatchItem[S, K, V]) {
 func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
 	var empty BatchItem[S, K, V]
 	for i, item := range b.items {
-		delete(assignments, item.key)
+		delete(assignments, item.Key)
 		b.items[i] = empty
 	}
 	b.items = b.items[0:0]
@@ -99,12 +95,24 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 }
 
 func (ab *AsyncBatcher[S, K, V]) Add(ec *EventContext[S], key K, item V) {
-	bi := BatchItem[S, K, V]{
-		eventContext: ec,
-		key:          key,
-		item:         item,
-	}
+	ab.add(NewBatchItem(ec, key, item))
+}
 
+func (ab *AsyncBatcher[S, K, V]) AddItems(items ...BatchItem[S, K, V]) {
+	for _, bi := range items {
+		ab.add(bi)
+	}
+}
+
+func (ab *AsyncBatcher[S, K, V]) CompleteItems(items ...BatchItem[S, K, V]) {
+	for _, bi := range items {
+		bi.EventContext.AsyncJobComplete(func() (ExecutionState, error) {
+			return Complete, nil
+		})
+	}
+}
+
+func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[S, K, V]) {
 	ab.mux.Lock()
 	if batch := ab.batchFor(bi); batch != nil {
 		ab.addToBatch(bi, batch)
@@ -115,7 +123,7 @@ func (ab *AsyncBatcher[S, K, V]) Add(ec *EventContext[S], key K, item V) {
 }
 
 func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[S, K, V]) *asyncBatch[S, K, V] {
-	if batch, ok := ab.assignments[item.key]; ok && batch.state == ready {
+	if batch, ok := ab.assignments[item.Key]; ok && batch.state == ready {
 		return batch
 	} else if ok {
 		// this key is currently in an executing batch, so we have to wait for it to finish
@@ -130,7 +138,7 @@ func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[S, K, V]) *asyncBatch[S
 }
 
 func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[S, K, V], batch *asyncBatch[S, K, V]) {
-	ab.assignments[item.key] = batch
+	ab.assignments[item.Key] = batch
 	batch.add(item)
 
 	if len(batch.items) == ab.MaxBatchSize {

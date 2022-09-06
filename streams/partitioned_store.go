@@ -46,10 +46,15 @@ func (sp *changeLogPartition[T]) changeLogData() *changeLogData[T] {
 func (sp *changeLogPartition[T]) release() {
 }
 
-func (sp *changeLogPartition[T]) receiveChangeInternal(record *kgo.Record) {
+func (sp *changeLogPartition[T]) receiveChangeInternal(record *kgo.Record) error {
 	// this is only called during partition prep, so locking is not necessary
 	// this will improve performance a bit
-	sp.store.ReceiveChange(newIncomingRecord(record))
+	err := sp.store.ReceiveChange(newIncomingRecord(record))
+	if err != nil {
+		log.Errorf("Error receiving change on topic: %s, partition: %d, offset: %d, err: %v",
+			record.Topic, record.Partition, record.Offset, err)
+	}
+	return err
 }
 
 func (sp *changeLogPartition[T]) revokedInternal() {
