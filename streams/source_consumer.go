@@ -29,8 +29,8 @@ type eventSourceConsumer[T StateStore] struct {
 	client           *kgo.Client
 	partitionedStore *partitionedChangeLog[T]
 	ctx              context.Context
-	workers          map[TopicPartition]*partitionWorker[T]
-	prepping         map[TopicPartition]*partitionPrepper[T]
+	workers          map[int32]*partitionWorker[T]
+	prepping         map[int32]*partitionPrepper[T]
 	workerMux        sync.Mutex
 	preppingMux      sync.Mutex
 	incrBalancer     IncrementalGroupRebalancer
@@ -53,8 +53,8 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,
 		ctx:              eventSource.runStatus.Ctx(),
-		workers:          make(map[TopicPartition]*partitionWorker[T]),
-		prepping:         make(map[TopicPartition]*partitionPrepper[T]),
+		workers:          make(map[int32]*partitionWorker[T]),
+		prepping:         make(map[int32]*partitionPrepper[T]),
 		eventSource:      eventSource,
 		commitLog:        cl,
 		producerPool:     producerPool,
@@ -123,10 +123,11 @@ func (sc *eventSourceConsumer[T]) Client() *kgo.Client {
 func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
-	if _, ok := sc.prepping[tp]; !ok {
-		sc.partitionedStore.assign(tp.Partition)
+	partition := tp.Partition
+	if _, ok := sc.prepping[partition]; !ok {
+		sc.partitionedStore.assign(partition)
 		sb := newPartitionPrepper(tp, sc.eventSource.source, sc.client, sc.partitionedStore)
-		sc.prepping[tp] = sb
+		sc.prepping[partition] = sb
 		go func() {
 			start := time.Now()
 			log.Debugf("prepping %+v", tp)
@@ -146,7 +147,7 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition) {
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
-	if sb, ok := sc.prepping[tp]; ok {
+	if sb, ok := sc.prepping[tp.Partition]; ok {
 		sb.cancel()
 	} else {
 		// what to do? probably nothing, but if we have a double assignment, we could have problems
@@ -157,36 +158,38 @@ func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition
 
 func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []int32) {
 	validPartitions := make([]int32, 0, len(partitions))
-	allPartitions := make([]TopicPartition, 0, len(partitions))
-	unprepped := make([]TopicPartition, 0, len(partitions))
+	// allPartitions := make([]int32, 0, len(partitions))
+	unprepped := make([]int32, 0, len(partitions))
 	assignedPartitions := make([]TopicPartition, 0, len(partitions))
 	for _, p := range partitions {
-		allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
+		// allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
 		sc.partitionedStore.assign(p)
 	}
 	sc.workerMux.Lock()
 	defer sc.workerMux.Unlock()
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
-	for _, tp := range allPartitions {
-		if sb, ok := sc.prepping[tp]; ok {
+	for _, p := range partitions {
+		tp := TopicPartition{Partition: p, Topic: topic}
+		if sb, ok := sc.prepping[p]; ok {
 			assignedPartitions = append(assignedPartitions, tp)
-			delete(sc.prepping, tp)
+			delete(sc.prepping, p)
 			sb.activate()
-			store, _ := sc.partitionedStore.getStore(tp.Partition)
-			sc.workers[tp] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sb.waitUntilActive)
+			store, _ := sc.partitionedStore.getStore(p)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sb.waitUntilActive)
 		} else {
-			unprepped = append(unprepped, tp)
+			unprepped = append(unprepped, p)
 		}
 	}
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
-	for _, tp := range unprepped {
-		if _, ok := sc.workers[tp]; !ok {
-			validPartitions = append(validPartitions, tp.Partition)
+	for _, p := range unprepped {
+		tp := TopicPartition{Partition: p, Topic: topic}
+		if _, ok := sc.workers[p]; !ok {
+			validPartitions = append(validPartitions, p)
 			assignedPartitions = append(assignedPartitions, tp)
-			store, _ := sc.partitionedStore.getStore(tp.Partition)
-			sc.workers[tp] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, wg.Wait)
+			store, _ := sc.partitionedStore.getStore(p)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, wg.Wait)
 		}
 	}
 	go sc.populateChangeLogs(validPartitions, wg)
@@ -217,10 +220,9 @@ func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []in
 		return
 	}
 	for _, p := range partitions {
-		tap := TopicPartition{Partition: p, Topic: topic}
-		if worker, ok := sc.workers[tap]; ok {
+		if worker, ok := sc.workers[p]; ok {
 			worker.revoke()
-			delete(sc.workers, tap)
+			delete(sc.workers, p)
 		}
 		sc.partitionedStore.revoke(p)
 	}
@@ -245,9 +247,9 @@ func (sc *eventSourceConsumer[T]) partitionsRevoked(ctx context.Context, _ *kgo.
 }
 
 func (sc *eventSourceConsumer[T]) receive(p kgo.FetchTopicPartition) {
-	tap := TopicPartition{Partition: p.Partition, Topic: p.Topic}
+	// tap := TopicPartition{Partition: p.Partition, Topic: p.Topic}
 	sc.workerMux.Lock()
-	worker, ok := sc.workers[tap]
+	worker, ok := sc.workers[p.Partition]
 	sc.workerMux.Unlock()
 	if !ok || len(p.Records) == 0 {
 		return
@@ -278,9 +280,9 @@ func (sc *eventSourceConsumer[T]) start() {
 }
 
 // Inserts the interjection into the appropriate partition workers interjectionChannel. Returns immediately if the partiotns is not currently assigned.
-func (sc *eventSourceConsumer[T]) interject(tp TopicPartition, cmd Interjector[T], callback func()) {
+func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T], callback func()) {
 	sc.workerMux.Lock()
-	w := sc.workers[tp]
+	w := sc.workers[partition]
 	sc.workerMux.Unlock()
 	if w == nil {
 		if callback != nil {

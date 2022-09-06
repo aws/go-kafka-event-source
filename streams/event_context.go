@@ -68,6 +68,11 @@ func (ec *EventContext[T]) TopicPartition() TopicPartition {
 	return ec.topicPartition
 }
 
+// The parition for this event. It is present for both normal events and Interjections
+func (ec *EventContext[T]) partition() int32 {
+	return ec.topicPartition.Partition
+}
+
 // Forwards records to the transactional producer for your EventSource.
 func (ec *EventContext[T]) Forward(records ...*Record) {
 	ec.produceLock.Lock()

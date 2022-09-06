@@ -222,7 +222,7 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 // Executes `cmd` in the context of the given TopicPartition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
 // `callback` is used interally to make InterjectAll a blocking call. `callback` may or may not be useful depending on your use case.
 func (es *EventSource[T]) Interject(tp TopicPartition, cmd Interjector[T], callback func()) {
-	es.consumer.interject(tp, cmd, callback)
+	es.consumer.interject(tp.Partition, cmd, callback)
 }
 
 /*

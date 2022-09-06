@@ -48,7 +48,7 @@ type changeLogGroupConsumer[T StateStore] struct {
 	prepMark         []byte
 	activeMark       []byte
 	count            uint64
-	highWatermarks   map[TopicPartition]int64
+	highWatermarks   map[int32]int64
 }
 
 func newPartitionWaitGroup() *sync.WaitGroup {
@@ -93,6 +93,7 @@ func newChangeLogGroupConsumer[T StateStore](source Source, partitions []int32,
 		topic:            partitionedStore.changeLogTopic,
 		partitions:       partitions,
 		producer:         producer,
+		highWatermarks:   make(map[int32]int64),
 	}
 
 	return clgc
@@ -186,7 +187,7 @@ func (clgc *changeLogGroupConsumer[T]) populate(c chan []*kgo.Record, receiver *
 					Topic:     string(record.Headers[0].Value),
 				}
 				offset := binary.LittleEndian.Uint64(record.Value)
-				clgc.highWatermarks[tp] = int64(offset)
+				clgc.highWatermarks[tp.Partition] = int64(offset)
 			} else {
 				receiver.receiveChangeInternal(record)
 				atomic.AddUint64(&clgc.count, 1)

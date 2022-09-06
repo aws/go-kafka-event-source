@@ -25,7 +25,7 @@ import (
 
 type eosCommitLog struct {
 	pendingSyncs  map[string]*sync.WaitGroup
-	watermarks    map[TopicPartition]int64
+	watermarks    map[int32]int64
 	mux           sync.Mutex
 	syncMux       sync.Mutex
 	numPartitions int32
@@ -60,7 +60,7 @@ func topicPartitionFromBytes(b []byte) (tp TopicPartition) {
 
 func newEosCommitLog(source Source, numPartitions int) *eosCommitLog {
 	cl := &eosCommitLog{
-		watermarks:    make(map[TopicPartition]int64),
+		watermarks:    make(map[int32]int64),
 		pendingSyncs:  make(map[string]*sync.WaitGroup),
 		numPartitions: int32(numPartitions),
 		topic:         source.CommitLogTopicNameForGroupId(),
@@ -88,7 +88,7 @@ func (cl *eosCommitLog) ReceiveChange(record IncomingRecord) error {
 		tp := topicPartitionFromBytes(record.Key())
 		offset := readIntegerFromByteArray[int64](record.Value())
 		cl.mux.Lock()
-		cl.watermarks[tp] = offset
+		cl.watermarks[tp.Partition] = offset
 		cl.mux.Unlock()
 	}
 	return nil
@@ -147,7 +147,7 @@ func (cl *eosCommitLog) syncCommitLogPartition(tp TopicPartition) {
 func (cl *eosCommitLog) Watermark(tp TopicPartition) int64 {
 	cl.mux.Lock()
 	defer cl.mux.Unlock()
-	if offset, ok := cl.watermarks[tp]; ok {
+	if offset, ok := cl.watermarks[tp.Partition]; ok {
 		return offset
 	}
 	return -1
