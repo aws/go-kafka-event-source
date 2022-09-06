@@ -30,9 +30,10 @@ type EventContext[T any] struct {
 	// we're going to keep a reference to the partition worker context
 	// so we can skip over any buffered events in the EOSProducer
 	ctx            context.Context
+	next           *EventContext[T]
+	prev           *EventContext[T]
 	producer       *producerNode[T]
 	changeLog      *changeLogData[T]
-	next           *EventContext[T]
 	pendingRecords *pendingRecords
 	input          IncomingRecord
 	asynCompleter  asyncCompleter[T]
@@ -40,6 +41,7 @@ type EventContext[T any] struct {
 	wg             sync.WaitGroup
 	topicPartition TopicPartition
 	isInterjection bool
+	mustProduce    bool
 }
 
 func (ec *EventContext[T]) waitUntilComplete() {
@@ -129,10 +131,18 @@ func (ec *EventContext[T]) flushPendingRecords() {
 	ec.pendingRecords = nil
 }
 
+func (ec *EventContext[T]) MustProduce() bool {
+	return ec.mustProduce
+}
+
 func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
 	ec.produceLock.Lock()
 	// an event context can only ever have 1 producer
-	if ec.producer == nil {
+	if ec.producer == nil && !ec.isRevoked() {
+		// we are at the point of no return
+		// if the partition is rejected, we must wait for this event to finish
+		// before relinquiching control
+		ec.mustProduce = true
 		ec.producer = p
 		ec.flushPendingRecords()
 	}

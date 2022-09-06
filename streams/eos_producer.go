@@ -157,7 +157,7 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 			// this partition is not owned by the committing producer, so it is safe to start producing.
 			// update all of the event contexts for this partition only.
 			// once setProducer is called, any buffered records for this event will now be sent to the kafka broker.
-			pp.onDeck.setProducerFor(ec.TopicPartition())
+			pp.onDeck.setProducerFor(ec.partition())
 		} else if wasEqual {
 			// this was the correct producer, no need to update all and create an n^2 issue
 			ec.setProducer(pp.onDeck)
@@ -165,7 +165,7 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 		// off to the races
 		if pp.shouldTryFlush() {
 			pp.tryFlush()
-		} else if len(pp.onDeck.eventContexts) == 1 {
+		} else if pp.onDeck.eventContextCnt == 1 {
 			pp.flushTimer.Reset(pp.cfg.BatchDelay)
 		}
 
@@ -185,11 +185,11 @@ func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 }
 
 func (pp *eosProducerPool[T]) shouldTryFlush() bool {
-	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) >= pp.cfg.TargetBatchSize
+	return sak.Max(pp.onDeck.eventContextCnt, len(pp.onDeck.recordsToProduce)) >= pp.cfg.TargetBatchSize
 }
 
 func (pp *eosProducerPool[T]) shouldForceFlush() bool {
-	return sak.Max(len(pp.onDeck.eventContexts), len(pp.onDeck.recordsToProduce)) == pp.cfg.MaxBatchSize
+	return sak.Max(pp.onDeck.eventContextCnt, len(pp.onDeck.recordsToProduce)) == pp.cfg.MaxBatchSize
 }
 
 func (pp *eosProducerPool[T]) tryFlush() {
@@ -198,7 +198,7 @@ func (pp *eosProducerPool[T]) tryFlush() {
 		// force a swap, blocking until successful
 		pp.commitQueue <- pp.onDeck
 		pp.onDeck = <-pp.producerNodeQueue
-	} else if len(pp.onDeck.eventContexts) > 0 {
+	} else if pp.onDeck.eventContextCnt > 0 {
 		// the committing channel is full, reset the purge timer
 		// to push any lingering items.
 		select {
@@ -227,22 +227,26 @@ func (pp *eosProducerPool[T]) commitLoop() {
 			log.Errorf("%v", err)
 		}
 		pp.producerNodeQueue <- p
-		log.Tracef("committed %d executions in: %v", len(p.eventContexts), sincer{p.firstEvent})
+		log.Tracef("committed %d executions in: %v", pp.onDeck.eventContextCnt, sincer{p.firstEvent})
 	}
 }
 
+type eventContextDll[T any] struct {
+	root, tail *EventContext[T]
+}
+
 type producerNode[T any] struct {
-	client                *kgo.Client
-	commitLog             *eosCommitLog
-	recordsToProduce      []recordAndEventContext[T]
-	eventContexts         []*EventContext[T]
-	currentTopicParitions map[int32]*EventContext[T]
-	partitionOwners       partitionOwners[T]
-	commitWaiter          sync.WaitGroup
-	partitionLock         sync.RWMutex
-	produceLock           sync.Mutex
-	firstEvent            time.Time
-	committing            bool
+	client           *kgo.Client
+	commitLog        *eosCommitLog
+	recordsToProduce []recordAndEventContext[T]
+	eventContextCnt  int
+	currentParitions map[int32]eventContextDll[T]
+	partitionOwners  partitionOwners[T]
+	commitWaiter     sync.WaitGroup
+	partitionLock    sync.RWMutex
+	produceLock      sync.Mutex
+	firstEvent       time.Time
+	committing       bool
 	// errs                  []error
 }
 
@@ -257,9 +261,9 @@ func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog, par
 		panic(err)
 	}
 	return &producerNode[T]{client: client,
-		commitLog:             commitLog,
-		currentTopicParitions: make(map[int32]*EventContext[T]),
-		partitionOwners:       partitionOwners,
+		commitLog:        commitLog,
+		currentParitions: make(map[int32]eventContextDll[T]),
+		partitionOwners:  partitionOwners,
 	}
 }
 
@@ -270,67 +274,110 @@ func (p *producerNode[T]) revokePartition(tp TopicPartition) {
 	// and that should ensure that any pending events for this topic partition
 	// should be flushed
 	p.partitionLock.RLock()
-	_, hasPartition := p.currentTopicParitions[tp.Partition]
+	dll, hasPartition := p.currentParitions[tp.Partition]
+	mustProduce := false
+	for ec := dll.root; ec != nil; ec = ec.next {
+		if ec.MustProduce() {
+			mustProduce = true
+			break
+		}
+	}
 	p.partitionLock.RUnlock()
 
-	if hasPartition {
+	if hasPartition && mustProduce {
 		p.commitWaiter.Wait()
 	}
 }
 
 func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 	// if ec is an Interjection, offset will be -1
-	offset := ec.Offset()
+	// p.eventContextCnt++
 	p.partitionLock.Lock()
 	partition := ec.partition()
-	if offset > 0 {
-		p.currentTopicParitions[partition] = ec
-	} else if _, ok := p.currentTopicParitions[partition]; !ok {
-		// we don't want to override an actual offset with a -1
-		// so only set this if there are no other offsets being tracked
-		p.currentTopicParitions[partition] = ec
+	// we'll use a linked list in reverse order, since we want the larget offset anyway
+	if dll, ok := p.currentParitions[partition]; ok {
+		ec.prev = dll.tail
+		dll.tail.next = ec
+		dll.tail = ec
+		// we're not using a ptr, so be sure to set the value
+		p.currentParitions[partition] = dll
+	} else {
+		p.currentParitions[partition] = eventContextDll[T]{
+			root: ec,
+			tail: ec,
+		}
 	}
+
 	p.partitionLock.Unlock()
 
-	if len(p.eventContexts) == 0 {
+	if p.eventContextCnt == 0 {
 		p.commitWaiter.Add(1)
 		if err := p.client.BeginTransaction(); err != nil {
 			log.Errorf("txn err: %v", err)
 		}
 		p.firstEvent = time.Now()
 	}
-	p.eventContexts = append(p.eventContexts, ec)
+	p.eventContextCnt++
 }
 
-func (p *producerNode[T]) setProducerFor(tp TopicPartition) {
-	for _, ec := range p.eventContexts {
-		if ec.TopicPartition() == tp {
+func (p *producerNode[T]) setProducerFor(partition int32) {
+	if dll, ok := p.currentParitions[partition]; ok {
+		for ec := dll.root; ec != nil; ec = ec.next {
 			ec.setProducer(p)
 		}
 	}
 }
 
-func (p *producerNode[T]) commit() error {
-	for tp := range p.currentTopicParitions {
-		p.partitionOwners.set(tp, p)
-	}
-	// we need to set the active producer for TopicPartitions in this producerNode
-	// if they are unset
-	for _, ec := range p.eventContexts {
+func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
+
+	// commenting for now as this must be set ing the proper order
+	for ec := first; ec != nil; ec = ec.next {
+		// if the partition was owned by another producer we must give the event context
+		// a chance to produce any buffered records
 		ec.setProducer(p)
 	}
-	// now wait for all events to finish processing
-	for _, ec := range p.eventContexts {
-		ec.waitUntilComplete()
-	}
-	ctx, cancelFlush := context.WithTimeout(context.Background(), 30*time.Second)
-	p.partitionLock.RLock()
-	for _, ec := range p.currentTopicParitions {
+
+	commitRecordProduced := false
+	for ec := last; ec != nil; ec = ec.prev {
+		if !ec.MustProduce() {
+			// this partition has been revoked before it has produced anything
+			// it's safe to skip
+			continue
+		}
+
 		offset := ec.Offset()
-		if offset > 0 {
+		// if less than 0, this is an interjection, no record to commit
+		if !commitRecordProduced && offset >= 0 {
+			// we only want to produce the highest offset, since these are in reverse order
+			// produce a commit recotrd for the first real offset we see
+			commitRecordProduced = true
 			crd := p.commitLog.commitRecord(ec.TopicPartition(), offset)
 			p.produceRecord(ec, crd)
 		}
+		ec.waitUntilComplete()
+	}
+
+}
+
+func (p *producerNode[T]) commit() error {
+	for tp := range p.currentParitions {
+		p.partitionOwners.set(tp, p)
+	}
+	// // we need to set the active producer for TopicPartitions in this producerNode
+	// // if they are unset
+	// // TODO: we'd like to get rdi of this array, but we need to be able to traverse event contexts in bith directions
+	// // should not be too bad, but we'll need prev and next in event context
+	// for _, ec := range p.eventContexts {
+	// 	ec.setProducer(p)
+	// }
+	// now wait for all events to finish processing
+	// for _, ec := range p.eventContexts {
+	// 	ec.waitUntilComplete()
+	// }
+	ctx, cancelFlush := context.WithTimeout(context.Background(), 30*time.Second)
+	p.partitionLock.RLock()
+	for _, dll := range p.currentParitions {
+		p.finalizeEventContexts(dll.root, dll.tail)
 	}
 	p.partitionLock.RUnlock()
 	err := p.client.Flush(ctx)
@@ -354,23 +401,20 @@ func (p *producerNode[T]) commit() error {
 }
 
 func (p *producerNode[T]) clearState() {
-	for i := range p.eventContexts {
-		p.eventContexts[i] = nil
-	}
+	p.eventContextCnt = 0
 	for i := range p.recordsToProduce {
 		p.recordsToProduce[i] = recordAndEventContext[T]{}
 	}
 
-	for tp := range p.currentTopicParitions {
+	for tp := range p.currentParitions {
 		p.partitionOwners.clear(tp)
-		delete(p.currentTopicParitions, tp)
+		delete(p.currentParitions, tp)
 	}
-
-	p.eventContexts = p.eventContexts[0:0]
 	p.recordsToProduce = p.recordsToProduce[0:0]
 }
 
 func (p *producerNode[T]) clearRevokedState() {
+
 	// we're in an error state in our eosProducer
 	// we may retry the commit, but if any partitions were revoked
 	// we do not want to retry them. So let's remove them from internal state
@@ -380,35 +424,24 @@ func (p *producerNode[T]) clearRevokedState() {
 	// if not necessary, so this is likely more efficient most of the time
 	revokedPartitions := make(map[int32]struct{})
 
-	for i, ec := range p.eventContexts {
-		if ec.isRevoked() {
-			revokedPartitions[ec.partition()] = struct{}{}
-			delete(p.currentTopicParitions, ec.partition())
-			p.eventContexts[i] = nil
+	for partition, dll := range p.currentParitions {
+		if dll.root.isRevoked() {
+			delete(p.currentParitions, partition)
+			revokedPartitions[partition] = struct{}{}
 		}
 	}
 
 	if len(revokedPartitions) > 0 {
 		// we have revocations, remove them from recordsToProduce so if we retry, we are not breaking eos
-		// also ensure we remove any nil eventContexts from the previous step
 		validRecords := make([]recordAndEventContext[T], 0, len(p.recordsToProduce))
 		for _, record := range p.recordsToProduce {
 			if _, ok := revokedPartitions[record.eventContext.partition()]; !ok {
 				validRecords = append(validRecords, record)
 			}
 		}
-
-		validEvents := make([]*EventContext[T], 0, len(p.eventContexts))
-		// we previously nulled out invalid events, just create a new slice without them
-		for _, ec := range p.eventContexts {
-			if ec != nil {
-				validEvents = append(validEvents, ec)
-			}
-		}
-
 		p.recordsToProduce = validRecords
-		p.eventContexts = validEvents
 	}
+
 }
 
 func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
