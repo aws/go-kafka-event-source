@@ -100,7 +100,7 @@ func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, 
 		cluster:    cluster,
 	}
 	for i := 0; i < cfg.PoolSize; i++ {
-		p := newProducerNode(cluster, commitLog, pp.partitionOwners)
+		p := newProducerNode(i, cluster, commitLog, pp.partitionOwners)
 		pp.producerNodes = append(pp.producerNodes, p)
 		pp.producerNodeQueue <- p
 	}
@@ -152,7 +152,7 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 		}
 
 		// the point of no return. this event will be processed evcen if the partition is later revoked
-		pp.onDeck.addEventContext(ec)
+		txnStarted := pp.onDeck.addEventContext(ec)
 		if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.partition(), pp.onDeck); wasNil {
 			// this partition is not owned by the committing producer, so it is safe to start producing.
 			// update all of the event contexts for this partition only.
@@ -165,7 +165,7 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 		// off to the races
 		if pp.shouldTryFlush() {
 			pp.tryFlush()
-		} else if pp.onDeck.eventContextCnt == 1 {
+		} else if txnStarted {
 			pp.flushTimer.Reset(pp.cfg.BatchDelay)
 		}
 
@@ -242,15 +242,16 @@ type producerNode[T any] struct {
 	eventContextCnt  int
 	currentParitions map[int32]eventContextDll[T]
 	partitionOwners  partitionOwners[T]
-	commitWaiter     sync.WaitGroup
+	commitWaiter     sync.Mutex // this is a mutex masquerading as a WaitGroup
 	partitionLock    sync.RWMutex
 	produceLock      sync.Mutex
 	firstEvent       time.Time
+	id               int
 	committing       bool
 	// errs                  []error
 }
 
-func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog, partitionOwners partitionOwners[T]) *producerNode[T] {
+func newProducerNode[T StateStore](id int, cluster Cluster, commitLog *eosCommitLog, partitionOwners partitionOwners[T]) *producerNode[T] {
 	client, err := NewClient(
 		cluster,
 		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
@@ -261,6 +262,7 @@ func newProducerNode[T StateStore](cluster Cluster, commitLog *eosCommitLog, par
 		panic(err)
 	}
 	return &producerNode[T]{client: client,
+		id:               id,
 		commitLog:        commitLog,
 		currentParitions: make(map[int32]eventContextDll[T]),
 		partitionOwners:  partitionOwners,
@@ -285,14 +287,25 @@ func (p *producerNode[T]) revokePartition(tp TopicPartition) {
 	p.partitionLock.RUnlock()
 
 	if hasPartition && mustProduce {
-		p.commitWaiter.Wait()
+		log.Debugf("waiting for producerNode: %d to commit before revoking %+v", p.id, tp)
+		p.commitWaiter.Lock()
+		defer p.commitWaiter.Unlock()
 	}
+	log.Debugf("revoked %+v from producerNode: %d", tp, p.id)
 }
 
-func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
+func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 	// if ec is an Interjection, offset will be -1
-	// p.eventContextCnt++
+	startTxn := false
 	p.partitionLock.Lock()
+
+	if p.eventContextCnt == 0 {
+		// we will commit something, block revocations on ownded partitions until we're done
+		p.commitWaiter.Lock()
+		p.firstEvent = time.Now()
+		startTxn = true
+	}
+
 	partition := ec.partition()
 	// we'll use a linked list in reverse order, since we want the larget offset anyway
 	if dll, ok := p.currentParitions[partition]; ok {
@@ -308,16 +321,14 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) {
 		}
 	}
 
+	p.eventContextCnt++
 	p.partitionLock.Unlock()
-
-	if p.eventContextCnt == 0 {
-		p.commitWaiter.Add(1)
+	if startTxn {
 		if err := p.client.BeginTransaction(); err != nil {
 			log.Errorf("txn err: %v", err)
 		}
-		p.firstEvent = time.Now()
 	}
-	p.eventContextCnt++
+	return startTxn
 }
 
 func (p *producerNode[T]) setProducerFor(partition int32) {
@@ -360,6 +371,7 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 }
 
 func (p *producerNode[T]) commit() error {
+	defer p.commitWaiter.Unlock()
 	for tp := range p.currentParitions {
 		p.partitionOwners.set(tp, p)
 	}
@@ -396,14 +408,18 @@ func (p *producerNode[T]) commit() error {
 		log.Errorf("commit error: %v", err)
 	}
 	p.committing = false
-	p.commitWaiter.Done()
 	return err
 }
 
 func (p *producerNode[T]) clearState() {
 	p.eventContextCnt = 0
-	for i := range p.recordsToProduce {
-		p.recordsToProduce[i] = recordAndEventContext[T]{}
+	var empty recordAndEventContext[T]
+	for i, rtp := range p.recordsToProduce {
+		rtp.eventContext.producer = nil
+		rtp.eventContext.input.kRecord = nil
+		rtp.eventContext.prev = nil
+		rtp.eventContext.next = nil
+		p.recordsToProduce[i] = empty
 	}
 
 	for tp := range p.currentParitions {
