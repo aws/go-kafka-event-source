@@ -19,4 +19,5 @@
 **/.DS_Store
 
 localtest
-
+streams/kafka_local/data
+streams/kafka_local/kafka
