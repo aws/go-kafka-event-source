@@ -131,7 +131,11 @@ func (ec *EventContext[T]) flushPendingRecords() {
 	ec.pendingRecords = nil
 }
 
-func (ec *EventContext[T]) MustProduce() bool {
+func (ec *EventContext[T]) abandon() {
+	ec.mustProduce = false
+}
+
+func (ec *EventContext[T]) includeInTxn() bool {
 	return ec.mustProduce
 }
 

@@ -151,7 +151,6 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
 			return
 		}
 
-		// the point of no return. this event will be processed evcen if the partition is later revoked
 		txnStarted := pp.onDeck.addEventContext(ec)
 		if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.partition(), pp.onDeck); wasNil {
 			// this partition is not owned by the committing producer, so it is safe to start producing.
@@ -279,7 +278,7 @@ func (p *producerNode[T]) revokePartition(tp TopicPartition) {
 	dll, hasPartition := p.currentParitions[tp.Partition]
 	mustProduce := false
 	for ec := dll.root; ec != nil; ec = ec.next {
-		if ec.MustProduce() {
+		if ec.includeInTxn() {
 			mustProduce = true
 			break
 		}
@@ -341,7 +340,8 @@ func (p *producerNode[T]) setProducerFor(partition int32) {
 
 func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 
-	// commenting for now as this must be set ing the proper order
+	// `setProducer` should be call in ascending offset order in case the partition is revoked
+	// during this call. This ensures that any event that are omitted will have larger offsets, ensuring order event processing
 	for ec := first; ec != nil; ec = ec.next {
 		// if the partition was owned by another producer we must give the event context
 		// a chance to produce any buffered records
@@ -349,8 +349,9 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 	}
 
 	commitRecordProduced := false
+	// we'll now iterate in reverse order - committing the largest offset
 	for ec := last; ec != nil; ec = ec.prev {
-		if !ec.MustProduce() {
+		if !ec.includeInTxn() {
 			// this partition has been revoked before it has produced anything
 			// it's safe to skip
 			continue
@@ -360,7 +361,7 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 		// if less than 0, this is an interjection, no record to commit
 		if !commitRecordProduced && offset >= 0 {
 			// we only want to produce the highest offset, since these are in reverse order
-			// produce a commit recotrd for the first real offset we see
+			// produce a commit record for the first real offset we see
 			commitRecordProduced = true
 			crd := p.commitLog.commitRecord(ec.TopicPartition(), offset)
 			p.produceRecord(ec, crd)
@@ -375,17 +376,6 @@ func (p *producerNode[T]) commit() error {
 	for tp := range p.currentParitions {
 		p.partitionOwners.set(tp, p)
 	}
-	// // we need to set the active producer for TopicPartitions in this producerNode
-	// // if they are unset
-	// // TODO: we'd like to get rdi of this array, but we need to be able to traverse event contexts in bith directions
-	// // should not be too bad, but we'll need prev and next in event context
-	// for _, ec := range p.eventContexts {
-	// 	ec.setProducer(p)
-	// }
-	// now wait for all events to finish processing
-	// for _, ec := range p.eventContexts {
-	// 	ec.waitUntilComplete()
-	// }
 	ctx, cancelFlush := context.WithTimeout(context.Background(), 30*time.Second)
 	p.partitionLock.RLock()
 	for _, dll := range p.currentParitions {
@@ -430,23 +420,19 @@ func (p *producerNode[T]) clearState() {
 }
 
 func (p *producerNode[T]) clearRevokedState() {
-
 	// we're in an error state in our eosProducer
 	// we may retry the commit, but if any partitions were revoked
 	// we do not want to retry them. So let's remove them from internal state
 
-	// this may require a lot of allocations, so let's check to see if there are any revocations first
-	// we'll end up looping through p.eventContexts twice, but it's better not to reallocate
-	// if not necessary, so this is likely more efficient most of the time
 	revokedPartitions := make(map[int32]struct{})
-
 	for partition, dll := range p.currentParitions {
 		if dll.root.isRevoked() {
-			delete(p.currentParitions, partition)
 			revokedPartitions[partition] = struct{}{}
+			for ec := dll.root; ec != nil; ec = ec.next {
+				ec.abandon() // we're not going to retry these items, mark them so
+			}
 		}
 	}
-
 	if len(revokedPartitions) > 0 {
 		// we have revocations, remove them from recordsToProduce so if we retry, we are not breaking eos
 		validRecords := make([]recordAndEventContext[T], 0, len(p.recordsToProduce))

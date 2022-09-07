@@ -21,20 +21,20 @@ import (
 /*
 EosDiagarm
 
-	 On-Deck Txn              Pending Txn Channel          Commit Go-Routine
-	┌───────────┐             ┌─────────────────┐          ┌──────────────────────────────────┐
-	│ EventCtx  │             │  Pending Txn(s) │          │  Committing Txn                  │
-	│ Offset: 7 │             │  ┌───────────┐  │          │  ┌───────────┐                   │
-	├───────────┤             │  │ EventCtx  │  │          │  │ EventCtx  │  1: Receive Event │
-	│ EventCtx  │             │  │ Offset: 4 │  │          │  │ Offset: 1 │                   │
-	│ Offset: 8 │             │  ├───────────┤  │          │  ├───────────┤  2: Flush Records │
-	├───────────┼────────────►│  │ EventCtx  │  ├─────────►│  │ EventCtx  │                   │
-	│ EventCtx  │             │  │ Offset: 5 │  │          │  │ Offset: 2 │  3: Commit        │
-	│ Offset: 9 │             │  ├───────────┤  │          │  ├───────────┤                   │
-	└───────────┘             │  │ EventCtx  │  │          │  │ EventCtx  │                   │
-	      ▲                   │  │ Offset: 6 │  │          │  │ Offset: 3 │                   │
-	      │                   │  └───────────┘  │          │  └───────────┘                   │
-	      │                   └─────────────────┘          └──────────────────────────────────┘
+	 On-Deck Txn            Pending Txn Channel          Commit Go-Routine
+	┌───────────┐           ┌─────────────────┐          ┌─────────────────────────────────────┐
+	│ EventCtx  │           │  Pending Txn(s) │          │  Committing Txn                     │
+	│ Offset: 7 │           │  ┌───────────┐  │          │  ┌───────────┐                      │
+	├───────────┤           │  │ EventCtx  │  │          │  │ EventCtx  │  1: Receive Txn      │
+	│ EventCtx  │           │  │ Offset: 4 │  │          │  │ Offset: 1 │                      │
+	│ Offset: 8 │           │  ├───────────┤  │          │  ├───────────┤  2: EventCtx(s).Wait │
+	├───────────┼──────────►│  │ EventCtx  │  ├─────────►│  │ EventCtx  │                      │
+	│ EventCtx  │           │  │ Offset: 5 │  │          │  │ Offset: 2 │  3: Flush Records    │
+	│ Offset: 9 │           │  ├───────────┤  │          │  ├───────────┤                      │
+	└───────────┘           │  │ EventCtx  │  │          │  │ EventCtx  │  4: Commit           │
+	      ▲                 │  │ Offset: 6 │  │          │  │ Offset: 3 │                      │
+	      │                 │  └───────────┘  │          │  └───────────┘                      │
+	      │                 └─────────────────┘          └─────────────────────────────────────┘
 	Incoming EventCtx
 */
 type EosConfig struct {
