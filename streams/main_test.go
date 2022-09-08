@@ -21,20 +21,23 @@ import (
 	"time"
 )
 
+const kafkaProgramScript = "kafka_local/exec-kafka-script.sh"
+const kafkaCleanupScript = "kafka_local/cleanup.sh"
+const kafkaDownloadScript = "kafka_local/download-kafka.sh"
+const kafkaWorkingDir = "kafka_local/kafka"
+
 func TestMain(m *testing.M) {
 
-	if err := exec.Command("sh", "kafka_local/cleanup.sh").Run(); err != nil {
-		fmt.Println(err)
-	}
-	kafkaScript := "kafka_local/exec-kafka-script.sh"
-	workingDir := "kafka_local/kafka"
-
-	if err := exec.Command("sh", "kafka_local/download_kafka.sh", workingDir).Run(); err != nil {
+	if err := exec.Command("sh", kafkaCleanupScript).Run(); err != nil {
 		fmt.Println(err)
 	}
 
-	zookeeper := exec.Command("sh", kafkaScript, workingDir, "zookeeper", "start")
-	kafka := exec.Command("sh", kafkaScript, workingDir, "kafka", "start")
+	if err := exec.Command("sh", kafkaDownloadScript, kafkaWorkingDir).Run(); err != nil {
+		fmt.Println(err)
+	}
+
+	zookeeper := kafkaScriptCommand("zookeeper", "start")
+	kafka := kafkaScriptCommand("kafka", "start")
 	if err := zookeeper.Start(); err != nil {
 		fmt.Println("zookeeper: ", err)
 	}
@@ -45,16 +48,21 @@ func TestMain(m *testing.M) {
 
 	m.Run()
 
-	if err := exec.Command("sh", kafkaScript, workingDir, "zookeeper", "stop").Run(); err != nil {
+	if err := kafkaScriptCommand("zookeeper", "stop").Run(); err != nil {
 		fmt.Println("zookeeper: ", err)
 	}
 
-	if err := exec.Command("sh", kafkaScript, workingDir, "kafka", "stop").Run(); err != nil {
+	if err := kafkaScriptCommand("kafka", "stop").Run(); err != nil {
 		fmt.Println("kafka: ", err)
 	}
 
 	time.Sleep(time.Second)
-	if err := exec.Command("sh", "kafka_local/cleanup.sh").Run(); err != nil {
+	if err := exec.Command("sh", kafkaCleanupScript).Run(); err != nil {
 		fmt.Println(err)
 	}
+}
+
+func kafkaScriptCommand(program, command string) *exec.Cmd {
+
+	return exec.Command("sh", kafkaProgramScript, kafkaWorkingDir, program, command)
 }
