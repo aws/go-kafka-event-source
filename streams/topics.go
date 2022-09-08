@@ -281,6 +281,8 @@ func CreateSource(source Source) (resolved Source, err error) {
 		resolved, err = createSource(source)
 		if isNetworkError(err) {
 			time.Sleep(time.Second)
+		} else {
+			break
 		}
 	}
 	return

@@ -41,7 +41,7 @@ type EventSource[T StateStore] struct {
 }
 
 // Create an EventSource.
-// defaultProcessor will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header
+// `defaultProcessor` will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header.
 func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord],
 	additionalClientOptions ...kgo.Opt) (*EventSource[T], error) {
 	es := &EventSource[T]{
