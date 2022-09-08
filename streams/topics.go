@@ -16,7 +16,10 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/google/btree"
@@ -198,7 +201,7 @@ func createTopic(adminClient *kadm.Client, numPartitions int32, replicationFacto
 	return err
 }
 
-func CreateDestination(destination Destination) (Destination, error) {
+func createDestination(destination Destination) (Destination, error) {
 	client, err := NewClient(destination.Cluster)
 	adminClient := kadm.NewClient(client)
 	minInSync := fmt.Sprintf("%d", destination.MinInSync)
@@ -211,16 +214,22 @@ func CreateDestination(destination Destination) (Destination, error) {
 	return destination, err
 }
 
-// Creates all necessary topics in the Kafka appropriate clusters as defined by Source.
-// Automatically invoked as part of NewSourceConsumer(). Ignores errros TOPIC_ALREADT_EXISTS errors.
-// Returns a corrected Source where NumPartitions and CommitLogPartitions are pulled from a ListTopics call. This is to prevent drift errors.
-// Returns an error if the details for Source topics could not be retrieved, or if there is a mismatch in partition counts fo the source topic and change log topic.
-func CreateSource(source Source) (Source, error) {
-	sourceTopicClient, err := NewClient(source.SourceCluster)
+func CreateDestination(destination Destination) (resolved Destination, err error) {
+	for retryCount := 0; retryCount < 15; retryCount++ {
+		resolved, err = createDestination(destination)
+		if isNetworkError(err) {
+			time.Sleep(time.Second)
+		}
+	}
+	return
+}
+
+func createSource(source Source) (Source, error) {
+	sourceTopicClient, err := NewClient(source.SourceCluster, kgo.RequestRetries(20), kgo.RetryTimeout(30*time.Second))
 	if err != nil {
 		return source, err
 	}
-	eosClient, err := NewClient(source.stateCluster())
+	eosClient, err := NewClient(source.stateCluster(), kgo.RequestRetries(20))
 	if err != nil {
 		return source, err
 	}
@@ -249,6 +258,32 @@ func CreateSource(source Source) (Source, error) {
 	sourceTopicClient.Close()
 	eosClient.Close()
 	return source, err
+}
+
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opError *net.OpError
+	if errors.As(err, &opError) {
+		log.Warnf("network error for operation: %s, error: %v", opError.Op, opError)
+		return true
+	}
+	return false
+}
+
+// Creates all necessary topics in the Kafka appropriate clusters as defined by Source.
+// Automatically invoked as part of NewSourceConsumer(). Ignores errros TOPIC_ALREADT_EXISTS errors.
+// Returns a corrected Source where NumPartitions and CommitLogPartitions are pulled from a ListTopics call. This is to prevent drift errors.
+// Returns an error if the details for Source topics could not be retrieved, or if there is a mismatch in partition counts fo the source topic and change log topic.
+func CreateSource(source Source) (resolved Source, err error) {
+	for retryCount := 0; retryCount < 15; retryCount++ {
+		resolved, err = createSource(source)
+		if isNetworkError(err) {
+			time.Sleep(time.Second)
+		}
+	}
+	return
 }
 
 func resolveTopicMetadata(source Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (Source, error) {

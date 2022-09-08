@@ -41,7 +41,7 @@ type eventSourceConsumer[T StateStore] struct {
 
 // Creates a new eventSourceConsumer.
 // `eventSource` must be a fully initialized EventSource.
-func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSourceConsumer[T], error) {
+func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additionalClientOptions ...kgo.Opt) (*eventSourceConsumer[T], error) {
 	cl := newEosCommitLog(eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
 	var partitionedStore *partitionedChangeLog[T]
 	var producerPool *eosProducerPool[T]
@@ -72,9 +72,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 			break
 		}
 	}
-
-	client, err := NewClient(
-		source.SourceCluster,
+	opts := []kgo.Opt{
 		balancerOpt,
 		kgo.ConsumerGroup(source.GroupId),
 		kgo.ConsumeTopics(source.Topic),
@@ -82,12 +80,17 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T]) (*eventSo
 		kgo.OnPartitionsRevoked(sc.partitionsRevoked),
 		kgo.RequireStableFetchOffsets(),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
-		kgo.SessionTimeout(6*time.Second),
+		kgo.SessionTimeout(6 * time.Second),
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 		kgo.FetchMaxWait(time.Second),
 		kgo.DisableAutoCommit(),
-		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign),
-	)
+		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign)}
+
+	if len(additionalClientOptions) > 0 {
+		opts = append(opts, additionalClientOptions...)
+	}
+	client, err := NewClient(
+		source.SourceCluster, opts...)
 	sc.client = client
 	if err != nil {
 		return nil, err

@@ -18,6 +18,8 @@
 .DS_Store
 **/.DS_Store
 
+# Local tetsing artifact ignores
 localtest
 streams/kafka_local/data
 streams/kafka_local/kafka
+streams/kafka_local/*.log

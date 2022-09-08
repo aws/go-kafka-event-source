@@ -26,23 +26,34 @@ func TestMain(m *testing.M) {
 	if err := exec.Command("sh", "kafka_local/cleanup.sh").Run(); err != nil {
 		fmt.Println(err)
 	}
-	if err := exec.Command("sh", "kafka_local/download_kafka.sh", "kafka_local/kafka").Run(); err != nil {
+	kafkaScript := "kafka_local/exec-kafka-script.sh"
+	workingDir := "kafka_local/kafka"
+
+	if err := exec.Command("sh", "kafka_local/download_kafka.sh", workingDir).Run(); err != nil {
 		fmt.Println(err)
 	}
 
-	zookeeper := exec.Command("sh", "kafka_local/start_kafka_program.sh", "kafka_local/kafka", "zookeeper")
-	kafka := exec.Command("sh", "kafka_local/start_kafka_program.sh", "kafka_local/kafka", "kafka")
+	zookeeper := exec.Command("sh", kafkaScript, workingDir, "zookeeper", "start")
+	kafka := exec.Command("sh", kafkaScript, workingDir, "kafka", "start")
 	if err := zookeeper.Start(); err != nil {
-		fmt.Println(err)
+		fmt.Println("zookeeper: ", err)
 	}
 
 	if err := kafka.Start(); err != nil {
-		fmt.Println(err)
+		fmt.Println("broker: ", err)
 	}
 
-	time.Sleep(5 * time.Second)
 	m.Run()
-	zookeeper.Process.Kill()
+
+	if err := exec.Command("sh", kafkaScript, workingDir, "zookeeper", "stop").Run(); err != nil {
+		fmt.Println("zookeeper: ", err)
+	}
+
+	if err := exec.Command("sh", kafkaScript, workingDir, "kafka", "stop").Run(); err != nil {
+		fmt.Println("kafka: ", err)
+	}
+
+	time.Sleep(time.Second)
 	if err := exec.Command("sh", "kafka_local/cleanup.sh").Run(); err != nil {
 		fmt.Println(err)
 	}

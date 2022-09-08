@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
@@ -41,7 +42,8 @@ type EventSource[T StateStore] struct {
 
 // Create an EventSource.
 // defaultProcessor will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header
-func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord]) (*EventSource[T], error) {
+func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord],
+	additionalClientOptions ...kgo.Opt) (*EventSource[T], error) {
 	es := &EventSource[T]{
 		defaultProcessor:            defaultProcessor,
 		stateStoreFactory:           stateStoreFactory,
@@ -51,7 +53,7 @@ func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFac
 		done:                        make(chan struct{}, 1),
 	}
 	var err error
-	es.consumer, err = newEventSourceConsumer(es)
+	es.consumer, err = newEventSourceConsumer(es, additionalClientOptions...)
 	return es, err
 }
 
