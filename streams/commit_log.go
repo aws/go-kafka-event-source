@@ -108,10 +108,7 @@ func (cl *eosCommitLog) closeSyncRequest(mark string) {
 func (cl *eosCommitLog) syncAll() {
 	wg := &sync.WaitGroup{}
 	for i := int32(0); i < cl.numPartitions; i++ {
-		tp := TopicPartition{
-			Partition: i,
-			Topic:     cl.topic,
-		}
+		tp := ntp(i, cl.topic)
 		wg.Add(1)
 		go func() {
 			cl.syncCommitLogPartition(tp)
@@ -122,10 +119,7 @@ func (cl *eosCommitLog) syncAll() {
 }
 
 func (cl *eosCommitLog) lastProcessed(tp TopicPartition) int64 {
-	cl.syncCommitLogPartition(TopicPartition{
-		Partition: cl.commitRecordPartition(tp),
-		Topic:     cl.topic,
-	})
+	cl.syncCommitLogPartition(ntp(cl.commitRecordPartition(tp), cl.topic))
 	return cl.Watermark(tp)
 }
 

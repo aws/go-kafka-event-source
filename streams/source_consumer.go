@@ -102,10 +102,7 @@ func (sc *eventSourceConsumer[T]) adjustOffsetsBeforeAssign(ctx context.Context,
 	for topic, partitionAssignments := range assignments {
 		partitions := sak.MapKeysToSlice(partitionAssignments)
 		for _, p := range partitions {
-			tp := TopicPartition{
-				Partition: p,
-				Topic:     topic,
-			}
+			tp := ntp(p, topic)
 			offset := sc.commitLog.Watermark(tp)
 			log.Infof("starting consumption for %+v at offset: %d", tp, offset+1)
 			if offset > 0 {
@@ -128,14 +125,14 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 	partition := tp.Partition
 	if _, ok := sc.prepping[partition]; !ok {
 		sc.partitionedStore.assign(partition)
-		sb := newPartitionPrepper(tp, sc.eventSource.source, sc.client, sc.partitionedStore)
-		sc.prepping[partition] = sb
+		prepper := newPartitionPrepper(tp, sc.eventSource.source, sc.client, sc.partitionedStore)
+		sc.prepping[partition] = prepper
 		go func() {
 			start := time.Now()
 			log.Debugf("prepping %+v", tp)
-			sb.prepare()
-			sb.waitUntilPrepared()
-			processed := sb.processed()
+			prepper.prepare()
+			prepper.waitUntilPrepared()
+			processed := prepper.processed()
 			duration := time.Since(start)
 			log.Infof("Prepped %+v, %d messages in %v (tps: %d)",
 				tp, processed, duration, int(float64(processed)/duration.Seconds()))
@@ -149,8 +146,8 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition) {
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
-	if sb, ok := sc.prepping[tp.Partition]; ok {
-		sb.cancel()
+	if prepper, ok := sc.prepping[tp.Partition]; ok {
+		prepper.cancel()
 		delete(sc.prepping, tp.Partition)
 	} else {
 		// what to do? probably nothing, but if we have a double assignment, we could have problems
@@ -161,13 +158,10 @@ func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition
 
 func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []int32) {
 	validPartitions := make([]int32, 0, len(partitions))
-	// allPartitions := make([]int32, 0, len(partitions))
 	unprepped := make([]int32, 0, len(partitions))
 	assignedPartitions := make([]TopicPartition, 0, len(partitions))
 	for _, p := range partitions {
-		tp := TopicPartition{Partition: p, Topic: topic}
-		// allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
-		assignedPartitions = append(assignedPartitions, tp)
+		assignedPartitions = append(assignedPartitions, ntp(p, topic))
 		sc.partitionedStore.assign(p)
 	}
 	sc.workerMux.Lock()
@@ -175,12 +169,11 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
 	for _, p := range partitions {
-		tp := TopicPartition{Partition: p, Topic: topic}
-		if sb, ok := sc.prepping[p]; ok {
+		if prepper, ok := sc.prepping[p]; ok {
 			delete(sc.prepping, p)
-			sb.activate()
+			prepper.activate()
 			store, _ := sc.partitionedStore.getStore(p)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sb.waitUntilActive)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, ntp(p, topic), sc.commitLog, store, sc.producerPool, prepper.waitUntilActive)
 		} else {
 			unprepped = append(unprepped, p)
 		}
@@ -191,16 +184,18 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 			validPartitions = append(validPartitions, p)
 		}
 	}
-	changeLog := newChangeLogGroupConsumer(sc.eventSource.source, validPartitions, sc.client, sc.partitionedStore)
-	for _, p := range validPartitions {
-		tp := TopicPartition{Partition: p, Topic: topic}
-		if _, ok := sc.workers[p]; !ok {
-			store, _ := sc.partitionedStore.getStore(p)
-			waiter := changeLog.activeWaiterFor(p)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, waiter)
+	if len(unprepped) > 0 {
+		changeLog := newChangeLogGroupConsumer(sc.eventSource.source, validPartitions, sc.client, sc.partitionedStore)
+		for _, p := range validPartitions {
+			if _, ok := sc.workers[p]; !ok {
+				store, _ := sc.partitionedStore.getStore(p)
+				waiter := changeLog.activeWaiterFor(p)
+				sc.workers[p] = newPartitionWorker(sc.eventSource, ntp(p, topic), sc.commitLog, store, sc.producerPool, waiter)
+			}
 		}
+		go sc.populateChangeLogs(validPartitions, changeLog)
 	}
-	go sc.populateChangeLogs(validPartitions, changeLog)
+
 	sc.incrBalancer.PartitionsAssigned(assignedPartitions...)
 }
 
@@ -208,6 +203,8 @@ func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, changeL
 	start := time.Now()
 	changeLog.start()
 	changeLog.activate()
+
+	// this block is for loggin purposes only, and is not functional in any other way
 	processed := uint64(0)
 	changeLog.waitUntilActive()
 	processed += changeLog.processed()
@@ -250,7 +247,6 @@ func (sc *eventSourceConsumer[T]) partitionsRevoked(ctx context.Context, _ *kgo.
 }
 
 func (sc *eventSourceConsumer[T]) receive(p kgo.FetchTopicPartition) {
-	// tap := TopicPartition{Partition: p.Partition, Topic: p.Topic}
 	sc.workerMux.Lock()
 	worker, ok := sc.workers[p.Partition]
 	sc.workerMux.Unlock()

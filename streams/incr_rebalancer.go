@@ -80,10 +80,7 @@ func (igmm IncrGroupMemberMeta) isPreparingFor(partition int32, topic string) bo
 }
 
 func containsTopicPartition(partition int32, topic string, tps []TopicPartition) bool {
-	tp := TopicPartition{
-		Partition: partition,
-		Topic:     topic,
-	}
+	tp := ntp(partition, topic)
 	for _, candidate := range tps {
 		if candidate == tp {
 			return true

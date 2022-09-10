@@ -224,9 +224,10 @@ func (gs groupState) balance(shifts int) bool {
 }
 
 func (gs groupState) assignToActiveMember(partition int32, recipient *incrGroupMember) {
+	tp := ntp(partition, gs.topic)
 	log.Debugf("assignToActiveMember: %v, partition: %d", recipient, partition)
-	delete(gs.ready, TopicPartition{Partition: partition, Topic: gs.topic})
-	delete(gs.preparing, TopicPartition{Partition: partition, Topic: gs.topic})
+	delete(gs.ready, tp)
+	delete(gs.preparing, tp)
 	gs.activeMembers.Delete(recipient)
 	recipient.assignments.ReplaceOrInsert(partition)
 	recipient.donatable.ReplaceOrInsert(partition)
@@ -242,8 +243,7 @@ func (gs groupState) assignToActiveMember(partition int32, recipient *incrGroupM
 func (gs groupState) instructActiveMemberToPrepareFor(partition int32, recipient *incrGroupMember) {
 	log.Debugf("instructActiveMemberToPrepareFor: %v, partition: %d", recipient, partition)
 	gs.activeMembers.Delete(recipient)
-	recipient.instructions.Prepare = append(recipient.instructions.Prepare,
-		TopicPartition{Partition: partition, Topic: gs.topic})
+	recipient.instructions.Prepare = append(recipient.instructions.Prepare, ntp(partition, gs.topic))
 	gs.activeMembers.ReplaceOrInsert(recipient)
 }
 

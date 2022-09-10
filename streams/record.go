@@ -74,10 +74,7 @@ func (r IncomingRecord) Offset() int64 {
 }
 
 func (r IncomingRecord) TopicPartition() TopicPartition {
-	return TopicPartition{
-		Partition: r.kRecord.Partition,
-		Topic:     r.kRecord.Topic,
-	}
+	return ntp(r.kRecord.Partition, r.kRecord.Topic)
 }
 
 func (r IncomingRecord) LeaderEpoch() int32 {

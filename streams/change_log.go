@@ -26,7 +26,8 @@ import (
 )
 
 var markKey = []byte("gkes__mark")
-var placeholder = []byte{1}
+
+// var placeholder = []byte{1}
 
 type ChangeAttributes map[string][]byte
 
@@ -190,7 +191,7 @@ func (clgc *changeLogGroupConsumer[T]) sendMarkerMessage(mark []byte) {
 	wg := sync.WaitGroup{}
 	wg.Add(len(clgc.partitions))
 	for _, p := range clgc.partitions {
-		sendMarkerMessage(clgc.producer, TopicPartition{Partition: p, Topic: clgc.topic}, mark, &wg)
+		sendMarkerMessage(clgc.producer, ntp(p, clgc.topic), mark, &wg)
 	}
 	wg.Wait()
 }

@@ -81,10 +81,6 @@ func (ps *partitionedChangeLog[T]) Len() int {
 	return len(ps.data)
 }
 
-// func (ps *partitionedChangeLog[T]) GetStore(ec *EventContext[T]) (sp *changeLogPartition[T], ok bool) {
-// 	return ps.getStore(ec.TopicPartition().Partition)
-// }
-
 func (ps *partitionedChangeLog[T]) getStore(partition int32) (sp *changeLogPartition[T], ok bool) {
 	ps.mux.Lock()
 	defer ps.mux.Unlock()
@@ -100,7 +96,7 @@ func (ps *partitionedChangeLog[T]) assign(partition int32) *changeLogPartition[T
 	log.Debugf("PartitionedStore assigning %d", partition)
 	if sp, ok = ps.data[partition]; !ok {
 		sp = &changeLogPartition[T]{
-			store: ps.factory(TopicPartition{partition, ps.changeLogTopic}),
+			store: ps.factory(ntp(partition, ps.changeLogTopic)),
 			topic: ps.changeLogTopic,
 		}
 		ps.data[partition] = sp

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
@@ -30,6 +31,11 @@ import (
 type TopicPartition struct {
 	Partition int32
 	Topic     string
+}
+
+// ntp == 'New Topic Partition'. Essentially a macro for TopicPartition{Parition: p, Topic: t} which is quite verbose
+func ntp(p int32, t string) TopicPartition {
+	return TopicPartition{Partition: p, Topic: t}
 }
 
 var tpSetFreeList = btree.NewFreeListG[TopicPartition](128)
@@ -344,4 +350,19 @@ func DeleteSource(source Source) error {
 		source.CommitLogTopicNameForGroupId(),
 		source.ChangeLogTopicName())
 	return nil
+}
+
+func sendMarkerMessage(producer *kgo.Client, tp TopicPartition, mark []byte, wg *sync.WaitGroup) {
+	record := kgo.KeySliceRecord(markKey, mark)
+	record.Topic = tp.Topic
+	record.Partition = tp.Partition
+	record.Headers = append(record.Headers, kgo.RecordHeader{Key: "gkes__mark"})
+	log.Debugf("Sending marker message to: %+v", tp)
+	producer.Produce(context.Background(), record, func(r *kgo.Record, err error) {
+		wg.Done()
+	})
+}
+
+func isMarkerRecord(record *kgo.Record) bool {
+	return len(record.Headers) == 1 && record.Headers[0].Key == "gkes__mark"
 }
