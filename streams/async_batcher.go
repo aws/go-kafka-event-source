@@ -40,8 +40,8 @@ type BatchExecutor[S StateStore, K comparable, V any] func(batch []BatchItem[S, 
 type asyncBatchState int
 
 const (
-	ready asyncBatchState = iota
-	executing
+	batcherReady asyncBatchState = iota
+	batcherExecuting
 )
 
 type asyncBatch[S StateStore, K comparable, V any] struct {
@@ -61,7 +61,7 @@ func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
 		b.items[i] = empty
 	}
 	b.items = b.items[0:0]
-	b.state = ready
+	b.state = batcherReady
 }
 
 type AsyncBatcher[S StateStore, K comparable, V any] struct {
@@ -123,14 +123,14 @@ func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[S, K, V]) {
 }
 
 func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[S, K, V]) *asyncBatch[S, K, V] {
-	if batch, ok := ab.assignments[item.Key]; ok && batch.state == ready {
+	if batch, ok := ab.assignments[item.Key]; ok && batch.state == batcherReady {
 		return batch
 	} else if ok {
 		// this key is currently in an executing batch, so we have to wait for it to finish
 		return nil
 	}
 	for _, batch := range ab.batches {
-		if batch.state == ready {
+		if batch.state == batcherReady {
 			return batch
 		}
 	}
@@ -154,8 +154,8 @@ func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[S, K, V], batch *asyn
 }
 
 func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[S, K, V]) {
-	if batch.state == ready {
-		batch.state = executing
+	if batch.state == batcherReady {
+		batch.state = batcherExecuting
 		ab.executingCount++
 		if batch.flushTimer != nil {
 			batch.flushTimer.Stop()

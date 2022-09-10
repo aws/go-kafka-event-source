@@ -151,6 +151,7 @@ func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition
 	defer sc.preppingMux.Unlock()
 	if sb, ok := sc.prepping[tp.Partition]; ok {
 		sb.cancel()
+		delete(sc.prepping, tp.Partition)
 	} else {
 		// what to do? probably nothing, but if we have a double assignment, we could have problems
 		// need to investigate this race condition further
@@ -164,7 +165,9 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 	unprepped := make([]int32, 0, len(partitions))
 	assignedPartitions := make([]TopicPartition, 0, len(partitions))
 	for _, p := range partitions {
+		tp := TopicPartition{Partition: p, Topic: topic}
 		// allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
+		assignedPartitions = append(assignedPartitions, tp)
 		sc.partitionedStore.assign(p)
 	}
 	sc.workerMux.Lock()
@@ -174,7 +177,6 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 	for _, p := range partitions {
 		tp := TopicPartition{Partition: p, Topic: topic}
 		if sb, ok := sc.prepping[p]; ok {
-			assignedPartitions = append(assignedPartitions, tp)
 			delete(sc.prepping, p)
 			sb.activate()
 			store, _ := sc.partitionedStore.getStore(p)
@@ -183,33 +185,32 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 			unprepped = append(unprepped, p)
 		}
 	}
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
+
 	for _, p := range unprepped {
-		tp := TopicPartition{Partition: p, Topic: topic}
 		if _, ok := sc.workers[p]; !ok {
 			validPartitions = append(validPartitions, p)
-			assignedPartitions = append(assignedPartitions, tp)
-			store, _ := sc.partitionedStore.getStore(p)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, wg.Wait)
 		}
 	}
-	go sc.populateChangeLogs(validPartitions, wg)
+	changeLog := newChangeLogGroupConsumer(sc.eventSource.source, validPartitions, sc.client, sc.partitionedStore)
+	for _, p := range validPartitions {
+		tp := TopicPartition{Partition: p, Topic: topic}
+		if _, ok := sc.workers[p]; !ok {
+			store, _ := sc.partitionedStore.getStore(p)
+			waiter := changeLog.activeWaiterFor(p)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, waiter)
+		}
+	}
+	go sc.populateChangeLogs(validPartitions, changeLog)
 	sc.incrBalancer.PartitionsAssigned(assignedPartitions...)
 }
 
-func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, wg *sync.WaitGroup) {
-	if sc.partitionedStore == nil {
-		return
-	}
+func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, changeLog *changeLogGroupConsumer[T]) {
 	start := time.Now()
-	changeLog := newChangeLogGroupConsumer(sc.eventSource.source, partitions, sc.client, sc.partitionedStore)
 	changeLog.start()
 	changeLog.activate()
 	processed := uint64(0)
 	changeLog.waitUntilActive()
 	processed += changeLog.processed()
-	wg.Done()
 	duration := time.Since(start)
 	log.Infof("Received %d messages in %v (tps: %d)",
 		processed, duration, int(float64(processed)/duration.Seconds()))

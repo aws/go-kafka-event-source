@@ -17,7 +17,6 @@ package streams
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,7 +47,6 @@ type changeLogGroupConsumer[T StateStore] struct {
 	prepMark         []byte
 	activeMark       []byte
 	count            uint64
-	highWatermarks   map[int32]int64
 }
 
 func newPartitionWaitGroup() *sync.WaitGroup {
@@ -93,7 +91,6 @@ func newChangeLogGroupConsumer[T StateStore](source Source, partitions []int32,
 		topic:            partitionedStore.changeLogTopic,
 		partitions:       partitions,
 		producer:         producer,
-		highWatermarks:   make(map[int32]int64),
 	}
 
 	return clgc
@@ -148,9 +145,9 @@ func (clgc *changeLogGroupConsumer[T]) activate() {
 // 	return clgc.prepWaiters[partition].Wait
 // }
 
-// func (clgc *changeLogGroupConsumer[T]) activeWaiterFor(partition int32) func() {
-// 	return clgc.activeWaiters[partition].Wait
-// }
+func (clgc *changeLogGroupConsumer[T]) activeWaiterFor(partition int32) func() {
+	return clgc.activeWaiters[partition].Wait
+}
 
 func (clgc *changeLogGroupConsumer[T]) waitUntilPrepared() {
 	for _, wg := range clgc.prepWaiters {
@@ -181,13 +178,6 @@ func (clgc *changeLogGroupConsumer[T]) populate(c chan []*kgo.Record, receiver *
 				} else if bytes.Equal(record.Value, clgc.activeMark) {
 					clgc.activeWaiters[record.Partition].Done()
 				}
-			} else if len(record.Headers) == 1 && record.Headers[0].Key == "gkes__watermark" {
-				tp := TopicPartition{
-					Partition: record.Partition,
-					Topic:     string(record.Headers[0].Value),
-				}
-				offset := binary.LittleEndian.Uint64(record.Value)
-				clgc.highWatermarks[tp.Partition] = int64(offset)
 			} else {
 				receiver.receiveChangeInternal(record)
 				atomic.AddUint64(&clgc.count, 1)
@@ -203,19 +193,4 @@ func (clgc *changeLogGroupConsumer[T]) sendMarkerMessage(mark []byte) {
 		sendMarkerMessage(clgc.producer, TopicPartition{Partition: p, Topic: clgc.topic}, mark, &wg)
 	}
 	wg.Wait()
-}
-
-func sendMarkerMessage(producer *kgo.Client, tp TopicPartition, mark []byte, wg *sync.WaitGroup) {
-	record := kgo.KeySliceRecord(markKey, mark)
-	record.Topic = tp.Topic
-	record.Partition = tp.Partition
-	record.Headers = append(record.Headers, kgo.RecordHeader{Key: "gkes__mark", Value: placeholder})
-	log.Debugf("Sending marker message to: %+v", tp)
-	producer.Produce(context.Background(), record, func(r *kgo.Record, err error) {
-		wg.Done()
-	})
-}
-
-func isMarkerRecord(record *kgo.Record) bool {
-	return len(record.Headers) == 1 && record.Headers[0].Key == "gkes__mark"
 }

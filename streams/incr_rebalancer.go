@@ -363,7 +363,8 @@ func (ir *incrementalRebalancer) ProtocolName() string {
 	return IncrementalCoopProtocol
 }
 
-// Needed to fulfill the kgo.GroupBalancer interface. There should be non need to interact with this directly.
+// Needed to fulfill the kgo.GroupBalancer interface. There should be no need to interact with this directly,
+// though we are hijacking this method to parse balance instructions like 'Prepare' and 'Forget'
 func (ir *incrementalRebalancer) ParseSyncAssignment(assignment []byte) (map[string][]int32, error) {
 	cma := new(kmsg.ConsumerMemberAssignment)
 	err := cma.ReadFrom(assignment)
@@ -418,6 +419,8 @@ func (ir *incrementalRebalancer) MemberBalancer(members []kmsg.JoinGroupResponse
 }
 
 // Needed to fulfill the kgo.GroupBalancer interface. There should be non need to interact with this directly.
+// We'll use the same meta data format as kgo itself (using copy-and-paste technology) and user The supplied UserData foeld to provide IncrementalRebalancer
+// specific data. This should allow us to be compatible with the coop_sticky that is already supplied by kgo.
 func (ir *incrementalRebalancer) JoinGroupMetadata(interests []string, currentAssignment map[string][]int32, generation int32) []byte {
 	meta := kmsg.NewConsumerMemberMetadata()
 	meta.Topics = interests
@@ -431,13 +434,19 @@ func (ir *incrementalRebalancer) JoinGroupMetadata(interests []string, currentAs
 	// KAFKA-12898: ensure our topics are sorted
 	metaOwned := meta.OwnedPartitions
 	sort.Slice(metaOwned, func(i, j int) bool { return metaOwned[i].Topic < metaOwned[j].Topic })
+	meta.UserData = ir.userData()
+	return meta.AppendTo(nil)
+}
+
+func (ir *incrementalRebalancer) userData() []byte {
 	ir.statusLock.Lock()
-	meta.UserData, _ = json.Marshal(IncrGroupMemberMeta{
+	defer ir.statusLock.Unlock()
+	data, _ := json.Marshal(IncrGroupMemberMeta{
 		Status:    ir.memberStatus,
 		LeftAt:    ir.leaveTime,
 		Preparing: ir.preparing.Items(),
 		Ready:     ir.ready.Items(),
 	})
-	ir.statusLock.Unlock()
-	return meta.AppendTo(nil)
+
+	return data
 }

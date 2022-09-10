@@ -15,7 +15,9 @@
 package streams
 
 import (
+	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -27,42 +29,46 @@ const kafkaDownloadScript = "kafka_local/download-kafka.sh"
 const kafkaWorkingDir = "kafka_local/kafka"
 
 func TestMain(m *testing.M) {
-
+	flag.Parse()
+	// cleanup data logs in case we exited abnormally
 	if err := exec.Command("sh", kafkaCleanupScript).Run(); err != nil {
 		fmt.Println(err)
 	}
 
+	// download binaly distribution of kafka if necessary
 	if err := exec.Command("sh", kafkaDownloadScript, kafkaWorkingDir).Run(); err != nil {
 		fmt.Println(err)
 	}
 
+	// start zookeeper and broker asynchronously
 	zookeeper := kafkaScriptCommand("zookeeper", "start")
 	kafka := kafkaScriptCommand("kafka", "start")
 	if err := zookeeper.Start(); err != nil {
 		fmt.Println("zookeeper: ", err)
 	}
-
 	if err := kafka.Start(); err != nil {
 		fmt.Println("broker: ", err)
 	}
 
-	m.Run()
+	// run our tests
+	code := m.Run()
 
+	// stop zookeeper and broker
 	if err := kafkaScriptCommand("zookeeper", "stop").Run(); err != nil {
 		fmt.Println("zookeeper: ", err)
 	}
-
 	if err := kafkaScriptCommand("kafka", "stop").Run(); err != nil {
 		fmt.Println("kafka: ", err)
 	}
 
+	// give it a second then clean up data logs
 	time.Sleep(time.Second)
 	if err := exec.Command("sh", kafkaCleanupScript).Run(); err != nil {
 		fmt.Println(err)
 	}
+	os.Exit(code)
 }
 
 func kafkaScriptCommand(program, command string) *exec.Cmd {
-
 	return exec.Command("sh", kafkaProgramScript, kafkaWorkingDir, program, command)
 }
