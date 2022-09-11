@@ -117,13 +117,13 @@ func (pw *partitionWorker[T]) pushRecords() {
 				pw.eventInput <- record
 			}
 		case <-pw.runStatus.Done():
-			log.Infof("Closing worker for %+v", pw.topicPartition)
+			log.Debugf("Closing worker for %+v", pw.topicPartition)
 			pw.stopSignal <- struct{}{}
 			<-pw.stopped
 			close(pw.input)
 			close(pw.eventInput)
 			close(pw.asyncCompleter.asyncJobs)
-			log.Infof("Closed worker for %+v", pw.topicPartition)
+			log.Debugf("Closed worker for %+v", pw.topicPartition)
 			return
 		}
 	}

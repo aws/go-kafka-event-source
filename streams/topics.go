@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
@@ -352,17 +351,6 @@ func DeleteSource(source Source) error {
 	return nil
 }
 
-func sendMarkerMessage(producer *kgo.Client, tp TopicPartition, mark []byte, wg *sync.WaitGroup) {
-	record := kgo.KeySliceRecord(markKey, mark)
-	record.Topic = tp.Topic
-	record.Partition = tp.Partition
-	record.Headers = append(record.Headers, kgo.RecordHeader{Key: "gkes__mark"})
-	log.Debugf("Sending marker message to: %+v", tp)
-	producer.Produce(context.Background(), record, func(r *kgo.Record, err error) {
-		wg.Done()
-	})
-}
-
 func isMarkerRecord(record *kgo.Record) bool {
-	return len(record.Headers) == 1 && record.Headers[0].Key == "gkes__mark"
+	return len(record.Headers) == 1 && record.Headers[0].Key == markerKeyString
 }

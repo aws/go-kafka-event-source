@@ -98,7 +98,7 @@ func (r IncomingRecord) Value() []byte {
 }
 
 func (r IncomingRecord) isMarkerRecord() bool {
-	return len(r.kRecord.Headers) == 1 && r.kRecord.Headers[0].Key == "gkes__mark"
+	return isMarkerRecord(r.kRecord)
 }
 
 func (r *Record) Offset() int64 {

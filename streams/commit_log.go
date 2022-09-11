@@ -130,11 +130,7 @@ func (cl *eosCommitLog) syncCommitLogPartition(tp TopicPartition) {
 	markWaiter.Add(1)
 	cl.pendingSyncs[mark] = markWaiter
 	cl.syncMux.Unlock()
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	sendMarkerMessage(cl.changeLog.client, tp, []byte(mark), &wg)
-	wg.Wait()
+	sendMarkerMessage(cl.changeLog.client, tp, []byte(mark))
 	markWaiter.Wait()
 }
 

@@ -26,17 +26,20 @@ import (
 
 // A thick wrapper around a kgo.Client. Handles interaction with IncrementalRebalancer, as well as providing mechanisms for interjecting into a stream.
 type eventSourceConsumer[T StateStore] struct {
-	client           *kgo.Client
-	partitionedStore *partitionedChangeLog[T]
-	ctx              context.Context
-	workers          map[int32]*partitionWorker[T]
-	prepping         map[int32]*partitionPrepper[T]
-	workerMux        sync.Mutex
-	preppingMux      sync.Mutex
-	incrBalancer     IncrementalGroupRebalancer
-	eventSource      *EventSource[T]
-	commitLog        *eosCommitLog
-	producerPool     *eosProducerPool[T]
+	client             *kgo.Client
+	partitionedStore   *partitionedChangeLog[T]
+	stateStoreConsumer *stateStoreConsumer[T]
+	ctx                context.Context
+	workers            map[int32]*partitionWorker[T]
+
+	prepping     map[int32]*stateStorePartition[T]
+	workerMux    sync.Mutex
+	preppingMux  sync.Mutex
+	incrBalancer IncrementalGroupRebalancer
+	eventSource  *EventSource[T]
+	commitLog    *eosCommitLog
+	producerPool *eosProducerPool[T]
+	// prepping           map[int32]*partitionPrepper[T]
 }
 
 // Creates a new eventSourceConsumer.
@@ -54,7 +57,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		partitionedStore: partitionedStore,
 		ctx:              eventSource.runStatus.Ctx(),
 		workers:          make(map[int32]*partitionWorker[T]),
-		prepping:         make(map[int32]*partitionPrepper[T]),
+		prepping:         make(map[int32]*stateStorePartition[T]),
 		eventSource:      eventSource,
 		commitLog:        cl,
 		producerPool:     producerPool,
@@ -91,6 +94,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	client, err := NewClient(
 		source.SourceCluster, opts...)
 	sc.client = client
+	sc.stateStoreConsumer = NewStateStoreConsumer[T](source)
 	if err != nil {
 		return nil, err
 	}
@@ -124,15 +128,16 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 	defer sc.preppingMux.Unlock()
 	partition := tp.Partition
 	if _, ok := sc.prepping[partition]; !ok {
-		sc.partitionedStore.assign(partition)
-		prepper := newPartitionPrepper(tp, sc.eventSource.source, sc.client, sc.partitionedStore)
-		sc.prepping[partition] = prepper
+		store := sc.partitionedStore.assign(partition)
+
+		ssp := sc.stateStoreConsumer.preparePartition(partition, store)
+		sc.prepping[partition] = ssp
 		go func() {
 			start := time.Now()
 			log.Debugf("prepping %+v", tp)
-			prepper.prepare()
-			prepper.waitUntilPrepared()
-			processed := prepper.processed()
+
+			ssp.sync()
+			processed := ssp.processed()
 			duration := time.Since(start)
 			log.Infof("Prepped %+v, %d messages in %v (tps: %d)",
 				tp, processed, duration, int(float64(processed)/duration.Seconds()))
@@ -146,8 +151,8 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition) {
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
-	if prepper, ok := sc.prepping[tp.Partition]; ok {
-		prepper.cancel()
+	if _, ok := sc.prepping[tp.Partition]; ok {
+		sc.stateStoreConsumer.cancelPartition(tp.Partition)
 		delete(sc.prepping, tp.Partition)
 	} else {
 		// what to do? probably nothing, but if we have a double assignment, we could have problems
@@ -157,61 +162,62 @@ func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition
 }
 
 func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []int32) {
-	validPartitions := make([]int32, 0, len(partitions))
+	// validPartitions := make([]int32, 0, len(partitions))
+	// allPartitions := make([]int32, 0, len(partitions))
 	unprepped := make([]int32, 0, len(partitions))
 	assignedPartitions := make([]TopicPartition, 0, len(partitions))
 	for _, p := range partitions {
-		assignedPartitions = append(assignedPartitions, ntp(p, topic))
+		// allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
 		sc.partitionedStore.assign(p)
+		assignedPartitions = append(assignedPartitions, TopicPartition{Partition: p, Topic: topic})
 	}
 	sc.workerMux.Lock()
 	defer sc.workerMux.Unlock()
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
 	for _, p := range partitions {
-		if prepper, ok := sc.prepping[p]; ok {
-			delete(sc.prepping, p)
-			prepper.activate()
+		tp := TopicPartition{Partition: p, Topic: topic}
+		if sb, ok := sc.prepping[p]; ok {
 			store, _ := sc.partitionedStore.getStore(p)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, ntp(p, topic), sc.commitLog, store, sc.producerPool, prepper.waitUntilActive)
+			log.Warnf("syncing prepped partition %+v", sb.topicPartition)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sb.sync)
+			delete(sc.prepping, p)
 		} else {
 			unprepped = append(unprepped, p)
 		}
 	}
 
 	for _, p := range unprepped {
+		tp := TopicPartition{Partition: p, Topic: topic}
 		if _, ok := sc.workers[p]; !ok {
-			validPartitions = append(validPartitions, p)
-		}
-	}
-	if len(unprepped) > 0 {
-		changeLog := newChangeLogGroupConsumer(sc.eventSource.source, validPartitions, sc.client, sc.partitionedStore)
-		for _, p := range validPartitions {
-			if _, ok := sc.workers[p]; !ok {
-				store, _ := sc.partitionedStore.getStore(p)
-				waiter := changeLog.activeWaiterFor(p)
-				sc.workers[p] = newPartitionWorker(sc.eventSource, ntp(p, topic), sc.commitLog, store, sc.producerPool, waiter)
-			}
-		}
-		go sc.populateChangeLogs(validPartitions, changeLog)
-	}
+			// validPartitions = append(validPartitions, p)
+			store, _ := sc.partitionedStore.getStore(p)
 
+			sp := sc.stateStoreConsumer.activatePartition(p, store)
+			log.Warnf("syncing unprepped partition %+v", sp.topicPartition)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sp.sync)
+		}
+	}
+	// go sc.populateChangeLogs(validPartitions, wg)
 	sc.incrBalancer.PartitionsAssigned(assignedPartitions...)
 }
 
-func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, changeLog *changeLogGroupConsumer[T]) {
-	start := time.Now()
-	changeLog.start()
-	changeLog.activate()
-
-	// this block is for loggin purposes only, and is not functional in any other way
-	processed := uint64(0)
-	changeLog.waitUntilActive()
-	processed += changeLog.processed()
-	duration := time.Since(start)
-	log.Infof("Received %d messages in %v (tps: %d)",
-		processed, duration, int(float64(processed)/duration.Seconds()))
-}
+// func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, wg *sync.WaitGroup) {
+// 	if sc.partitionedStore == nil {
+// 		return
+// 	}
+// 	start := time.Now()
+// 	changeLog := newChangeLogGroupConsumer(sc.eventSource.source, partitions, sc.client, sc.partitionedStore)
+// 	changeLog.start()
+// 	changeLog.activate()
+// 	processed := uint64(0)
+// 	changeLog.waitUntilActive()
+// 	processed += changeLog.processed()
+// 	wg.Done()
+// 	duration := time.Since(start)
+// 	log.Infof("Received %d messages in %v (tps: %d)",
+// 		processed, duration, int(float64(processed)/duration.Seconds()))
+// }
 
 func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []int32) {
 	sc.workerMux.Lock()
@@ -367,5 +373,6 @@ func (sc *eventSourceConsumer[T]) leave() <-chan struct{} {
 func (sc *eventSourceConsumer[T]) stop() {
 	sc.client.Close()
 	sc.commitLog.Stop()
+	sc.stateStoreConsumer.stop()
 	log.Infof("left group: %v", sc.eventSource.source.GroupId)
 }
