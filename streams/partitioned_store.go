@@ -81,13 +81,6 @@ func (ps *partitionedChangeLog[T]) Len() int {
 	return len(ps.data)
 }
 
-func (ps *partitionedChangeLog[T]) getStore(partition int32) (sp *changeLogPartition[T], ok bool) {
-	ps.mux.Lock()
-	defer ps.mux.Unlock()
-	sp, ok = ps.data[partition]
-	return
-}
-
 func (ps *partitionedChangeLog[T]) assign(partition int32) *changeLogPartition[T] {
 	ps.mux.Lock()
 	defer ps.mux.Unlock()

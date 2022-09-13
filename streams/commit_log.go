@@ -58,7 +58,7 @@ func topicPartitionFromBytes(b []byte) (tp TopicPartition) {
 	return
 }
 
-func newEosCommitLog(source Source, numPartitions int) *eosCommitLog {
+func newEosCommitLog(source *Source, numPartitions int) *eosCommitLog {
 	cl := &eosCommitLog{
 		watermarks:    make(map[int32]int64),
 		pendingSyncs:  make(map[string]*sync.WaitGroup),

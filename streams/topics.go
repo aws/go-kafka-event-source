@@ -87,44 +87,6 @@ func (tps TopicPartitionSet) Items() []TopicPartition {
 	return slice
 }
 
-type Source struct {
-	// The group id for the underlying Kafka consumer group.
-	GroupId string
-	// The Kafka Topic to consume
-	Topic string
-	// The desired number of partitions for Topic.
-	NumPartitions int
-	// The desired replication factor for Topic. Defaults to 1.
-	ReplicationFactor int
-	// The desired min-insync-replicas for Topic. Defaults to 1.
-	MinInSync int
-	// The number of Kafka partitions to use for the applications commit log. Defaults to 5 if unset.
-	CommitLogPartitions int
-	// The Kafka cluster on which Topic resides.
-	SourceCluster Cluster
-	// StateCluster is the Kafka cluster on which the commit log and the StateStore topic resides. If left unset (recommended), defaults to SourceCluster.
-	StateCluster Cluster
-	// The consumer rebalance strategies to use for the underlying Kafka consumer group.
-	BalanceStrategies []BalanceStrategy
-	/*
-		CommitOffsets should be set to true
-		if you are migrating from a traditional consumer group.
-		This will ensure that the offsets are commited to the consumer group
-		when in a mixed fleet scenario (migrating into an EventSource from a standard consumer).
-		If the deploytment fails, the original non-EventSource application can then
-		resume consuming from the commited offsets. Once the EventSource application is well-established,
-		this setting should be switched to false as offsets are managed by another topic.
-		In a EventSource application, committing offsets via the standard mechanism only
-		consumes resources and provides no benefit.
-	*/
-	CommitOffsets bool
-	/*
-		The config used for the eos producer pool. If empty, [DefaultEosConfig] is used. If an EventSource is initialized with an invalid
-		[EosConfig], the application will panic.
-	*/
-	EosConfig EosConfig
-}
-
 // An interface for implementing a resusable Kafka client configuration.
 // TODO: document reserved options
 type Cluster interface {
@@ -157,49 +119,6 @@ func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 	return kgo.NewClient(configOptions...)
 }
 
-// Returns the formatted topic name usewd for the commit log of Source
-func (s Source) CommitLogTopicNameForGroupId() string {
-	return fmt.Sprintf("gkes_commit_log_%s", s.GroupId)
-}
-
-// Returns the formatted topic name used for the change log ([StateStore]) of Source
-func (s Source) ChangeLogTopicName() string {
-	return fmt.Sprintf("gkes_change_log_%s_%s", s.Topic, s.GroupId)
-}
-
-// Returns Source.StateCluster if defined, otherwise Source.Cluster
-func (s Source) stateCluster() Cluster {
-	if s.StateCluster == nil {
-		return s.SourceCluster
-	}
-	return s.StateCluster
-}
-
-func minInSyncConfig(source Source) string {
-	factor := replicationFactorConfig(source)
-	if factor <= 1 {
-		return "1"
-	}
-	if source.MinInSync >= int(factor) {
-		return fmt.Sprintf("%d", source.ReplicationFactor-1)
-	}
-	return fmt.Sprintf("%d", source.MinInSync)
-}
-
-func replicationFactorConfig(source Source) int16 {
-	if source.ReplicationFactor <= 0 {
-		return 1
-	}
-	return int16(source.ReplicationFactor)
-}
-
-func commitLogPartitionsConfig(source Source) int32 {
-	if source.CommitLogPartitions <= 0 {
-		return int32(5)
-	}
-	return int32(source.CommitLogPartitions)
-}
-
 func createTopic(adminClient *kadm.Client, numPartitions int32, replicationFactor int16, config map[string]*string, topic ...string) error {
 	res, err := adminClient.CreateTopics(context.Background(), numPartitions, replicationFactor, config, topic...)
 	log.Infof("createTopic res: %+v, err: %v", res, err)
@@ -229,8 +148,8 @@ func CreateDestination(destination Destination) (resolved Destination, err error
 	return
 }
 
-func createSource(source Source) (Source, error) {
-	sourceTopicClient, err := NewClient(source.SourceCluster, kgo.RequestRetries(20), kgo.RetryTimeout(30*time.Second))
+func createSource(source *Source) (*Source, error) {
+	sourceTopicClient, err := NewClient(source.config.SourceCluster, kgo.RequestRetries(20), kgo.RetryTimeout(30*time.Second))
 	if err != nil {
 		return source, err
 	}
@@ -241,9 +160,9 @@ func createSource(source Source) (Source, error) {
 
 	sourceTopicAdminClient := kadm.NewClient(sourceTopicClient)
 	eosAdminClient := kadm.NewClient(eosClient)
-	createTopic(sourceTopicAdminClient, int32(source.NumPartitions), replicationFactorConfig(source), map[string]*string{
+	createTopic(sourceTopicAdminClient, int32(source.config.NumPartitions), replicationFactorConfig(source), map[string]*string{
 		"min.insync.replicas": sak.Ptr(minInSyncConfig(source)),
-	}, source.Topic)
+	}, source.config.Topic)
 
 	createTopic(eosAdminClient, commitLogPartitionsConfig(source), replicationFactorConfig(source), map[string]*string{
 		"cleanup.policy":            sak.Ptr("compact"),
@@ -251,7 +170,7 @@ func createSource(source Source) (Source, error) {
 		"min.cleanable.dirty.ratio": sak.Ptr("0.9"),
 	}, source.CommitLogTopicNameForGroupId())
 
-	changeLogPartitions := int32(source.NumPartitions)
+	changeLogPartitions := int32(source.config.NumPartitions)
 
 	createTopic(eosAdminClient, changeLogPartitions, replicationFactorConfig(source), map[string]*string{
 		"cleanup.policy":            sak.Ptr("compact"),
@@ -281,7 +200,8 @@ func isNetworkError(err error) bool {
 // Automatically invoked as part of NewSourceConsumer(). Ignores errros TOPIC_ALREADT_EXISTS errors.
 // Returns a corrected Source where NumPartitions and CommitLogPartitions are pulled from a ListTopics call. This is to prevent drift errors.
 // Returns an error if the details for Source topics could not be retrieved, or if there is a mismatch in partition counts fo the source topic and change log topic.
-func CreateSource(source Source) (resolved Source, err error) {
+func CreateSource(sourceConfig SourceConfig) (resolved *Source, err error) {
+	source := &Source{sourceConfig}
 	for retryCount := 0; retryCount < 15; retryCount++ {
 		resolved, err = createSource(source)
 		if isNetworkError(err) {
@@ -293,17 +213,17 @@ func CreateSource(source Source) (resolved Source, err error) {
 	return
 }
 
-func resolveTopicMetadata(source Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (Source, error) {
+func resolveTopicMetadata(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
 
-	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), source.Topic)
+	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), source.config.Topic)
 	if err != nil {
 		return source, err
 	}
 	if len(res) != 1 {
 		return source, fmt.Errorf("source topic does not exist")
 	}
-	source.NumPartitions = len(res[source.Topic].Partitions.Numbers())
-	source.ReplicationFactor = res[source.Topic].Partitions.NumReplicas()
+	source.config.NumPartitions = len(res[source.config.Topic].Partitions.Numbers())
+	source.config.ReplicationFactor = res[source.config.Topic].Partitions.NumReplicas()
 
 	commitLogName := source.CommitLogTopicNameForGroupId()
 	changLogName := source.ChangeLogTopicName()
@@ -312,16 +232,16 @@ func resolveTopicMetadata(source Source, sourceTopicAdminClient, eosAdminClient 
 		return source, err
 	}
 	if topicDetail, ok := res[commitLogName]; ok {
-		source.CommitLogPartitions = len(topicDetail.Partitions.Numbers())
+		source.config.CommitLogPartitions = len(topicDetail.Partitions.Numbers())
 	} else {
 		return source, fmt.Errorf("commit log topic does not exist")
 	}
 
 	if topicDetail, ok := res[changLogName]; ok {
 		changeLogPartitionCount := len(topicDetail.Partitions.Numbers())
-		if changeLogPartitionCount != source.NumPartitions {
+		if changeLogPartitionCount != source.config.NumPartitions {
 			return source, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
-				changeLogPartitionCount, source.NumPartitions)
+				changeLogPartitionCount, source.config.NumPartitions)
 		}
 	} else {
 		return source, fmt.Errorf("change log topic does not exist")
@@ -332,8 +252,9 @@ func resolveTopicMetadata(source Source, sourceTopicAdminClient, eosAdminClient 
 
 // Deletes all topics associated with a Source. Provided for local testing purpoose only.
 // Do not call this in deployed applications unless your topics are transient in nature.
-func DeleteSource(source Source) error {
-	sourceTopicClient, err := NewClient(source.SourceCluster)
+func DeleteSource(sourceConfig SourceConfig) error {
+	source := &Source{sourceConfig}
+	sourceTopicClient, err := NewClient(source.config.SourceCluster)
 	if err != nil {
 		return err
 	}
@@ -344,7 +265,7 @@ func DeleteSource(source Source) error {
 
 	sourceTopicAdminClient := kadm.NewClient(sourceTopicClient)
 	eosAdminClient := kadm.NewClient(eosClient)
-	sourceTopicAdminClient.DeleteTopics(context.Background(), source.Topic)
+	sourceTopicAdminClient.DeleteTopics(context.Background(), source.config.Topic)
 	eosAdminClient.DeleteTopics(context.Background(),
 		source.CommitLogTopicNameForGroupId(),
 		source.ChangeLogTopicName())
@@ -353,4 +274,12 @@ func DeleteSource(source Source) error {
 
 func isMarkerRecord(record *kgo.Record) bool {
 	return len(record.Headers) == 1 && record.Headers[0].Key == markerKeyString
+}
+
+func toTopicPartitions(topic string, partitions ...int32) []TopicPartition {
+	tps := make([]TopicPartition, len(partitions))
+	for i, p := range partitions {
+		tps[i] = ntp(p, topic)
+	}
+	return tps
 }

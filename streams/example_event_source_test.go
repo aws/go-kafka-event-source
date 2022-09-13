@@ -130,25 +130,20 @@ func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, e
 func ExampleEventSource() {
 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
 
-	var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
-	var source = streams.Source{
+	contactsCluster := streams.SimpleCluster([]string{"127.0.0.1:9092"})
+	sourceConfig := streams.SourceConfig{
 		GroupId:       "ExampleEventSourceGroup",
 		Topic:         "ExampleEventSource",
 		NumPartitions: 10,
 		SourceCluster: contactsCluster,
 	}
 
-	var destination = streams.Destination{
-		Cluster:      source.SourceCluster,
-		DefaultTopic: source.Topic,
+	destination := streams.Destination{
+		Cluster:      sourceConfig.SourceCluster,
+		DefaultTopic: sourceConfig.Topic,
 	}
 
-	source, err := streams.CreateSource(source)
-	if err != nil {
-		panic(err)
-	}
-
-	eventSource, err := streams.NewEventSource(source, NewContactStore, nil)
+	eventSource, err := streams.NewEventSource(sourceConfig, NewContactStore, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -193,7 +188,7 @@ func ExampleEventSource() {
 	<-eventSource.Done()
 	// cleaning up our local Kafka cluster
 	// you probably don't want to delete your topic
-	streams.DeleteSource(source)
+	streams.DeleteSource(sourceConfig)
 	// Output: Created contact: 123
 	// Notifying contact: 123 by email
 	// Deleted contact: 123
@@ -203,25 +198,20 @@ func ExampleEventSource() {
 func ExampleAsyncJobScheduler() {
 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
 
-	var contactsCluster = streams.SimpleCluster([]string{"127.0.0.1:9092"})
-	var source = streams.Source{
+	contactsCluster := streams.SimpleCluster([]string{"127.0.0.1:9092"})
+	sourceConfig := streams.SourceConfig{
 		GroupId:       "ExampleAsyncJobSchedulerGroup",
 		Topic:         "ExampleAsyncJobScheduler",
 		NumPartitions: 10,
 		SourceCluster: contactsCluster,
 	}
 
-	var destination = streams.Destination{
-		Cluster:      source.SourceCluster,
-		DefaultTopic: source.Topic,
+	destination := streams.Destination{
+		Cluster:      sourceConfig.SourceCluster,
+		DefaultTopic: sourceConfig.Topic,
 	}
 
-	source, err := streams.CreateSource(source)
-	if err != nil {
-		panic(err)
-	}
-
-	eventSource, err := streams.NewEventSource(source, NewContactStore, nil)
+	eventSource, err := streams.NewEventSource(sourceConfig, NewContactStore, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -266,7 +256,7 @@ func ExampleAsyncJobScheduler() {
 	<-eventSource.Done()
 	// cleaning up our local Kafka cluster
 	// you probably don't want to delete your topic
-	streams.DeleteSource(source)
+	streams.DeleteSource(sourceConfig)
 	// Output: Created contact: 123
 	// Notifying contact: 123 asynchronously by email
 	// Processing an email job with key: 'billy@bob.com'. This may take some time, emails are tricky!

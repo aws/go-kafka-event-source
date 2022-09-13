@@ -185,18 +185,24 @@ func (ssp *stateStorePartition[T]) handleRecordsAndContinue(records []*kgo.Recor
 
 type stateStoreConsumer[T StateStore] struct {
 	partitions map[int32]*stateStorePartition[T]
+	source     *Source
 	client     *kgo.Client
 	mux        sync.Mutex
 	topic      string
 }
 
-func NewStateStoreConsumer[T StateStore](source Source) *stateStoreConsumer[T] {
-	partitionCount := int32(source.NumPartitions)
+func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] {
+	partitionCount := int32(source.config.NumPartitions)
 	stateStorePartitions := make(map[int32]*stateStorePartition[T], partitionCount)
 	assignments := make(map[int32]kgo.Offset, partitionCount)
 	partitions := make([]int32, partitionCount)
 
 	topic := source.ChangeLogTopicName()
+
+	for i := int32(0); i < partitionCount; i++ {
+		partitions[i] = i
+		assignments[i] = kgo.NewOffset().AtStart()
+	}
 	client, err := NewClient(source.stateCluster(),
 		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{
 			topic: assignments,
@@ -213,8 +219,6 @@ func NewStateStoreConsumer[T StateStore](source Source) *stateStoreConsumer[T] {
 	})
 
 	for i := int32(0); i < partitionCount; i++ {
-		partitions[i] = i
-		assignments[i] = kgo.NewOffset().AtStart()
 		stateStorePartitions[i] = &stateStorePartition[T]{
 			topicPartition: TopicPartition{Partition: i, Topic: topic},
 			waiters:        make(map[string]chan struct{}, 2),
@@ -224,8 +228,8 @@ func NewStateStoreConsumer[T StateStore](source Source) *stateStoreConsumer[T] {
 			highWatermark:  -1,
 		}
 	}
-
 	ssc := &stateStoreConsumer[T]{
+		source:     source,
 		partitions: stateStorePartitions,
 		client:     client,
 		topic:      topic,

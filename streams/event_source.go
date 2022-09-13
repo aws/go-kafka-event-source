@@ -26,6 +26,21 @@ import (
 )
 
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
+type MetricsHandler func(interface{})
+type Metric struct {
+	StartMicro int64
+	EndMicro   int64
+	Count      int64
+	Bytes      int64
+	Partition  int32
+	Operation  string
+	Topic      string
+}
+
+func (m Metric) Duration() time.Duration {
+	return time.Duration(m.EndMicro-m.StartMicro) / time.Microsecond
+}
+
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
 type EventSource[T StateStore] struct {
 	root                        *eventProcessorWrapper[T]
@@ -34,16 +49,26 @@ type EventSource[T StateStore] struct {
 	defaultProcessor            EventProcessor[T, IncomingRecord]
 	consumer                    *eventSourceConsumer[T]
 	interjections               []interjection[T]
-	source                      Source
+	source                      *Source
 	deserializationErrorHandler ErrorHandler[T]
 	runStatus                   sak.RunStatus
 	done                        chan struct{}
+	metrics                     chan Metric
 }
 
 // Create an EventSource.
 // `defaultProcessor` will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header.
-func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord],
+func NewEventSource[T StateStore](sourceConfig SourceConfig, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord],
 	additionalClientOptions ...kgo.Opt) (*EventSource[T], error) {
+	source, err := CreateSource(sourceConfig)
+	if err != nil {
+		return nil, err
+	}
+	var metrics chan Metric
+	if source.config.MetricsHandler != nil {
+		metrics = make(chan Metric, 2048)
+	}
+
 	es := &EventSource[T]{
 		defaultProcessor:            defaultProcessor,
 		stateStoreFactory:           stateStoreFactory,
@@ -51,8 +76,8 @@ func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFac
 		deserializationErrorHandler: DefaultDeserializationErrorHandler[T],
 		runStatus:                   sak.NewRunStatus(context.Background()),
 		done:                        make(chan struct{}, 1),
+		metrics:                     metrics,
 	}
-	var err error
 	es.consumer, err = newEventSourceConsumer(es, additionalClientOptions...)
 	return es, err
 }
@@ -61,7 +86,34 @@ func NewEventSource[T StateStore](source Source, stateStoreFactory StateStoreFac
 // so if called from main(), it should be followed by some other blocking call to prevent the application from exiting.
 // See [streams.EventSource.WaitForSignals] for an example.
 func (es *EventSource[T]) ConsumeEvents() {
+	go es.emitMetrics()
 	go es.consumer.start()
+}
+
+func (es *EventSource[T]) EmitMetric(m Metric) {
+	if es.metrics != nil {
+		select {
+		case es.metrics <- m:
+		default:
+			log.Warnf("metrics channel full, unable to emit metrics: %+v", m)
+		}
+	}
+}
+
+func (es *EventSource[T]) emitMetrics() {
+	if es.metrics == nil {
+		return
+	}
+	handler := es.source.config.MetricsHandler
+	for {
+		select {
+		case m := <-es.metrics:
+			handler(m)
+		case <-es.runStatus.Done():
+			close(es.metrics)
+			return
+		}
+	}
 }
 
 /*

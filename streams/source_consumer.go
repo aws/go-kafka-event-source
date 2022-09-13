@@ -37,6 +37,7 @@ type eventSourceConsumer[T StateStore] struct {
 	preppingMux  sync.Mutex
 	incrBalancer IncrementalGroupRebalancer
 	eventSource  *EventSource[T]
+	source       *Source
 	commitLog    *eosCommitLog
 	producerPool *eosProducerPool[T]
 	// prepping           map[int32]*partitionPrepper[T]
@@ -51,7 +52,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	source := eventSource.source
 
 	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.ChangeLogTopicName())
-	producerPool = newEOSProducerPool[T](source.stateCluster(), cl, eventSource.source.EosConfig)
+	producerPool = newEOSProducerPool[T](source.stateCluster(), cl, source.config.EosConfig)
 
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,
@@ -59,12 +60,14 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		workers:          make(map[int32]*partitionWorker[T]),
 		prepping:         make(map[int32]*stateStorePartition[T]),
 		eventSource:      eventSource,
+		source:           source,
 		commitLog:        cl,
 		producerPool:     producerPool,
 	}
-	balanceStrategies := eventSource.source.BalanceStrategies
+	balanceStrategies := source.config.BalanceStrategies
 	if len(balanceStrategies) == 0 {
 		balanceStrategies = DefaultBalanceStrategies
+		source.config.BalanceStrategies = balanceStrategies
 	}
 	groupBalancers := toGroupBalancers(sc, balanceStrategies)
 	balancerOpt := kgo.Balancers(groupBalancers...)
@@ -77,8 +80,8 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	}
 	opts := []kgo.Opt{
 		balancerOpt,
-		kgo.ConsumerGroup(source.GroupId),
-		kgo.ConsumeTopics(source.Topic),
+		kgo.ConsumerGroup(source.config.GroupId),
+		kgo.ConsumeTopics(source.config.Topic),
 		kgo.OnPartitionsAssigned(sc.partitionsAssigned),
 		kgo.OnPartitionsRevoked(sc.partitionsRevoked),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
@@ -92,9 +95,9 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		opts = append(opts, additionalClientOptions...)
 	}
 	client, err := NewClient(
-		source.SourceCluster, opts...)
+		source.config.SourceCluster, opts...)
 	sc.client = client
-	sc.stateStoreConsumer = NewStateStoreConsumer[T](source)
+	sc.stateStoreConsumer = mewStateStoreConsumer[T](source)
 	if err != nil {
 		return nil, err
 	}
@@ -162,62 +165,28 @@ func (sc *eventSourceConsumer[T]) ForgetPreparedTopicPartition(tp TopicPartition
 }
 
 func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []int32) {
-	// validPartitions := make([]int32, 0, len(partitions))
-	// allPartitions := make([]int32, 0, len(partitions))
-	unprepped := make([]int32, 0, len(partitions))
-	assignedPartitions := make([]TopicPartition, 0, len(partitions))
-	for _, p := range partitions {
-		// allPartitions = append(allPartitions, TopicPartition{Partition: p, Topic: topic})
-		sc.partitionedStore.assign(p)
-		assignedPartitions = append(assignedPartitions, TopicPartition{Partition: p, Topic: topic})
-	}
 	sc.workerMux.Lock()
 	defer sc.workerMux.Unlock()
 	sc.preppingMux.Lock()
 	defer sc.preppingMux.Unlock()
 	for _, p := range partitions {
 		tp := TopicPartition{Partition: p, Topic: topic}
-		if sb, ok := sc.prepping[p]; ok {
-			store, _ := sc.partitionedStore.getStore(p)
-			log.Warnf("syncing prepped partition %+v", sb.topicPartition)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sb.sync)
+		store := sc.partitionedStore.assign(p)
+		if prepper, ok := sc.prepping[p]; ok {
+			log.Infof("syncing prepped partition %+v", prepper.topicPartition)
 			delete(sc.prepping, p)
-		} else {
-			unprepped = append(unprepped, p)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, prepper.sync)
+		} else if _, ok := sc.workers[p]; !ok {
+			prepper = sc.stateStoreConsumer.activatePartition(p, store)
+			log.Infof("syncing unprepped partition %+v", prepper.topicPartition)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, prepper.sync)
 		}
-	}
 
-	for _, p := range unprepped {
-		tp := TopicPartition{Partition: p, Topic: topic}
-		if _, ok := sc.workers[p]; !ok {
-			// validPartitions = append(validPartitions, p)
-			store, _ := sc.partitionedStore.getStore(p)
-
-			sp := sc.stateStoreConsumer.activatePartition(p, store)
-			log.Warnf("syncing unprepped partition %+v", sp.topicPartition)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, sp.sync)
-		}
 	}
-	// go sc.populateChangeLogs(validPartitions, wg)
-	sc.incrBalancer.PartitionsAssigned(assignedPartitions...)
+	sc.incrBalancer.PartitionsAssigned(toTopicPartitions(topic, partitions...)...)
+	// notify observers
+	sc.source.executeHandler(sc.source.config.OnPartitionAssigned, partitions...)
 }
-
-// func (sc *eventSourceConsumer[T]) populateChangeLogs(partitions []int32, wg *sync.WaitGroup) {
-// 	if sc.partitionedStore == nil {
-// 		return
-// 	}
-// 	start := time.Now()
-// 	changeLog := newChangeLogGroupConsumer(sc.eventSource.source, partitions, sc.client, sc.partitionedStore)
-// 	changeLog.start()
-// 	changeLog.activate()
-// 	processed := uint64(0)
-// 	changeLog.waitUntilActive()
-// 	processed += changeLog.processed()
-// 	wg.Done()
-// 	duration := time.Since(start)
-// 	log.Infof("Received %d messages in %v (tps: %d)",
-// 		processed, duration, int(float64(processed)/duration.Seconds()))
-// }
 
 func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []int32) {
 	sc.workerMux.Lock()
@@ -226,29 +195,28 @@ func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []in
 		return
 	}
 	for _, p := range partitions {
+		sc.source.executeHandler(sc.source.config.OnPartitionWillRevoke, p)
 		if worker, ok := sc.workers[p]; ok {
 			worker.revoke()
 			delete(sc.workers, p)
 		}
 		sc.partitionedStore.revoke(p)
 	}
+	// notify observers
+	sc.source.executeHandler(sc.source.config.OnPartitionRevoked, partitions...)
 }
 
 func (sc *eventSourceConsumer[T]) partitionsAssigned(ctx context.Context, _ *kgo.Client, assignments map[string][]int32) {
-	if len(assignments) > 0 {
-		log.Debugf("assigned:%v", assignments)
-		for topic, partitions := range assignments {
-			sc.assignPartitions(topic, partitions)
-		}
+	for topic, partitions := range assignments {
+		log.Debugf("assigned topic: %s, partitions: %v", topic, assignments)
+		sc.assignPartitions(topic, partitions)
 	}
 }
 
 func (sc *eventSourceConsumer[T]) partitionsRevoked(ctx context.Context, _ *kgo.Client, assignments map[string][]int32) {
-	if len(assignments) > 0 {
-		log.Debugf("revoked: %v", assignments)
-		for topic, partitions := range assignments {
-			sc.revokePartitions(topic, partitions)
-		}
+	for topic, partitions := range assignments {
+		log.Debugf("revoked topic: %s, partitions: %v", topic, assignments)
+		sc.revokePartitions(topic, partitions)
 	}
 }
 
@@ -272,7 +240,7 @@ func (sc *eventSourceConsumer[T]) start() {
 		f := sc.client.PollFetches(ctx)
 		cancel()
 		if f.IsClientClosed() {
-			log.Infof("client closed for group: %v", sc.eventSource.source.GroupId)
+			log.Infof("client closed for group: %v", sc.source.GroupId())
 			return
 		}
 		for _, err := range f.Errors() {
@@ -341,20 +309,33 @@ func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionAsync(interjector Int
 // If the group only has 1 allowed protocol, there is no need for this check.
 // If there are multiple, we need to interrogate Kafa to see which is active
 func (sc *eventSourceConsumer[T]) currentProtocolIsIncremental() bool {
+	if sc.incrBalancer == nil {
+		return false
+	}
+	if len(sc.source.BalanceStrategies()) <= 1 {
+		return true
+	}
+	// we're going to attempt to retrieve the current protocol
+	// this is somehat unrealiable as if the group state is in PreparingRebalance mode,
+	// the protocol returned will be empty
 	adminClient := kadm.NewClient(sc.Client())
-	groups, err := adminClient.DescribeGroups(context.Background(), sc.eventSource.source.GroupId)
+	groups, err := adminClient.DescribeGroups(context.Background(), sc.source.GroupId())
 	if err != nil || len(groups) == 0 {
 		log.Errorf("could not confirm group protocol: %v", err)
 		return false
 	}
-	log.Infof("consumerGroup protocol response: %+v", groups)
-	group := groups[sc.eventSource.source.GroupId]
+	log.Debugf("consumerGroup protocol response: %+v", groups)
+	group := groups[sc.source.GroupId()]
+	if len(group.Protocol) == 0 {
+		log.Warnf("could not retrieve group rebalance protocol, group state: %v", group.State)
+	}
 	return group.Protocol == IncrementalCoopProtocol
+
 }
 
 // Signals the IncrementalReblancer to start the process of shutting down this consumer in an orderly fashion.
 func (sc *eventSourceConsumer[T]) leave() <-chan struct{} {
-	log.Infof("leave signaled for group: %v", sc.eventSource.source.GroupId)
+	log.Infof("leave signaled for group: %v", sc.source.GroupId())
 	c := make(chan struct{}, 1)
 	if sc.incrBalancer == nil || !sc.currentProtocolIsIncremental() {
 		sc.stop()
@@ -374,5 +355,5 @@ func (sc *eventSourceConsumer[T]) stop() {
 	sc.client.Close()
 	sc.commitLog.Stop()
 	sc.stateStoreConsumer.stop()
-	log.Infof("left group: %v", sc.eventSource.source.GroupId)
+	log.Infof("left group: %v", sc.source.GroupId())
 }
