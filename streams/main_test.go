@@ -30,6 +30,10 @@ const kafkaWorkingDir = "kafka_local/kafka"
 
 func TestMain(m *testing.M) {
 	flag.Parse()
+	if testing.Short() {
+		os.Exit(m.Run())
+		return
+	}
 	// cleanup data logs in case we exited abnormally
 	if err := exec.Command("sh", kafkaCleanupScript).Run(); err != nil {
 		fmt.Println(err)

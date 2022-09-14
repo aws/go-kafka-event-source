@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
@@ -119,17 +120,28 @@ func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 	return kgo.NewClient(configOptions...)
 }
 
-func createTopic(adminClient *kadm.Client, numPartitions int32, replicationFactor int16, config map[string]*string, topic ...string) error {
+func createTopicFromConfigMap(adminClient *kadm.Client, numPartitions int32, replicationFactor int16, config map[string]*string, topic ...string) error {
 	res, err := adminClient.CreateTopics(context.Background(), numPartitions, replicationFactor, config, topic...)
 	log.Infof("createTopic res: %+v, err: %v", res, err)
 	return err
+}
+
+func createTopic(adminClient *kadm.Client, numPartitions int, replicationFactor int, minInsync int, cleanupPolicy CleanupPolicy, dirtyRatio float64, topic ...string) error {
+	configMap := map[string]*string{
+		"min.insync.replicas": sak.Ptr(strconv.Itoa(minInsync)),
+	}
+	if cleanupPolicy == CompactCleanupPolicy {
+		configMap["cleanup.policy"] = sak.Ptr("compact")
+		configMap["min.cleanable.dirty.ratio"] = sak.Ptr(strconv.FormatFloat(dirtyRatio, 'f', 2, 64))
+	}
+	return createTopicFromConfigMap(adminClient, int32(numPartitions), int16(replicationFactor), configMap, topic...)
 }
 
 func createDestination(destination Destination) (Destination, error) {
 	client, err := NewClient(destination.Cluster)
 	adminClient := kadm.NewClient(client)
 	minInSync := fmt.Sprintf("%d", destination.MinInSync)
-	createTopic(adminClient, int32(destination.NumPartitions), int16(destination.ReplicationFactor), map[string]*string{
+	createTopicFromConfigMap(adminClient, int32(destination.NumPartitions), int16(destination.ReplicationFactor), map[string]*string{
 		"min.insync.replicas": sak.Ptr(minInSync),
 	})
 	if err != nil {
@@ -160,23 +172,15 @@ func createSource(source *Source) (*Source, error) {
 
 	sourceTopicAdminClient := kadm.NewClient(sourceTopicClient)
 	eosAdminClient := kadm.NewClient(eosClient)
-	createTopic(sourceTopicAdminClient, int32(source.config.NumPartitions), replicationFactorConfig(source), map[string]*string{
-		"min.insync.replicas": sak.Ptr(minInSyncConfig(source)),
-	}, source.config.Topic)
 
-	createTopic(eosAdminClient, commitLogPartitionsConfig(source), replicationFactorConfig(source), map[string]*string{
-		"cleanup.policy":            sak.Ptr("compact"),
-		"min.insync.replicas":       sak.Ptr(minInSyncConfig(source)),
-		"min.cleanable.dirty.ratio": sak.Ptr("0.9"),
-	}, source.CommitLogTopicNameForGroupId())
+	createTopic(sourceTopicAdminClient, source.NumPartitions(),
+		replicationFactorConfig(source), minInSyncConfig(source), DeleteCleanupPolicy, 1, source.Topic())
 
-	changeLogPartitions := int32(source.config.NumPartitions)
+	createTopic(eosAdminClient, commitLogPartitionsConfig(source),
+		replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.9, source.CommitLogTopicNameForGroupId())
 
-	createTopic(eosAdminClient, changeLogPartitions, replicationFactorConfig(source), map[string]*string{
-		"cleanup.policy":            sak.Ptr("compact"),
-		"min.insync.replicas":       sak.Ptr(minInSyncConfig(source)),
-		"min.cleanable.dirty.ratio": sak.Ptr("0.5"),
-	}, source.ChangeLogTopicName())
+	createTopic(eosAdminClient, source.NumPartitions(),
+		replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, source.ChangeLogTopicName())
 
 	source, err = resolveTopicMetadata(source, sourceTopicAdminClient, eosAdminClient)
 	sourceTopicClient.Close()

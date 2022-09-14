@@ -17,7 +17,6 @@ package streams_test
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams"
@@ -48,14 +47,10 @@ func (c Contact) Key() string {
 	return c.Id
 }
 
-// setting up a wait group to shut down the consumer once our example is finished
-var wg = &sync.WaitGroup{}
-
 func createContact(ctx *streams.EventContext[ContactStore], contact Contact) (streams.ExecutionState, error) {
 	contactStore := ctx.Store()
 	ctx.RecordChange(contactStore.Put(contact))
 	fmt.Printf("Created contact: %s\n", contact.Id)
-	wg.Done()
 	return streams.Complete, nil
 }
 
@@ -65,7 +60,6 @@ func deleteContact(ctx *streams.EventContext[ContactStore], contact Contact) (st
 		ctx.RecordChange(entry)
 		fmt.Printf("Deleted contact: %s\n", contact.Id)
 	}
-	wg.Done()
 	return streams.Complete, nil
 }
 
@@ -76,7 +70,6 @@ func notifyContact(ctx *streams.EventContext[ContactStore], notification NotifyC
 	} else {
 		fmt.Printf("Contact %s does not exist!\n", notification.ContactId)
 	}
-	wg.Done()
 	return streams.Complete, nil
 }
 
@@ -93,8 +86,6 @@ var notificationScheduler *streams.AsyncJobScheduler[ContactStore, string, Email
 
 func notifyContactAsync(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) (streams.ExecutionState, error) {
 	contactStore := ctx.Store()
-	defer wg.Done()
-
 	if contact, ok := contactStore.Get(notification.ContactId); ok {
 		fmt.Printf("Notifying contact: %s asynchronously by %s\n", contact.Id, notification.NotificationType)
 		return notificationScheduler.Schedule(ctx, contact.Email, EmailNotification{
@@ -123,7 +114,6 @@ func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, e
 		contact.LastContact = time.Now()
 		contactStore.Put(contact)
 	}
-	wg.Done()
 	return streams.Complete, err
 }
 
@@ -152,7 +142,6 @@ func ExampleEventSource() {
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], deleteContact, "DeleteContact")
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[NotifyContactEvent], notifyContact, "NotifyContact")
 
-	wg.Add(4) // we're expecting 4 records in this example
 	eventSource.ConsumeEvents()
 
 	contact := Contact{
@@ -183,13 +172,8 @@ func ExampleEventSource() {
 	producer.Produce(context.Background(), deleteContactRecord)
 	producer.Produce(context.Background(), notificationRecord)
 
-	wg.Wait()
-	eventSource.Stop()
-	<-eventSource.Done()
-	// cleaning up our local Kafka cluster
-	// you probably don't want to delete your topic
-	streams.DeleteSource(sourceConfig)
-	// Output: Created contact: 123
+	eventSource.WaitForSignals(nil)
+	// Expected  Output: Created contact: 123
 	// Notifying contact: 123 by email
 	// Deleted contact: 123
 	// Contact 123 does not exist!
@@ -224,7 +208,6 @@ func ExampleAsyncJobScheduler() {
 	if err != nil {
 		panic(err)
 	}
-	wg.Add(3) // we're expecting 3 records in this example
 	eventSource.ConsumeEvents()
 
 	contact := Contact{
@@ -251,13 +234,8 @@ func ExampleAsyncJobScheduler() {
 	producer.Produce(context.Background(), createContactRecord)
 	producer.Produce(context.Background(), notificationRecord)
 
-	wg.Wait()
-	eventSource.Stop()
-	<-eventSource.Done()
-	// cleaning up our local Kafka cluster
-	// you probably don't want to delete your topic
-	streams.DeleteSource(sourceConfig)
-	// Output: Created contact: 123
+	eventSource.WaitForSignals(nil)
+	// Expected Output: Created contact: 123
 	// Notifying contact: 123 asynchronously by email
 	// Processing an email job with key: 'billy@bob.com'. This may take some time, emails are tricky!
 	// Notified contact: 123, address: billy@bob.com, payload: 'sending you mail...from a computer!'

@@ -62,6 +62,9 @@ type SourceConfig struct {
 	// Called when a partition has been assigned to the EventSource consumer client. This does not indicate that the partion is being processed.
 	OnPartitionAssigned SourcePartitionEventHandler
 
+	// Called when a perviously assigned partition has been activated, meaning the EventSource will start processing events for this partition. At the time this handler is called, the  StateStore associated with this partition has been bootstrapped and is ready for use.
+	OnPartitionActivated SourcePartitionEventHandler
+
 	// Called when a partition is about to be revoked from the EventSource consumer client.
 	// This is a blocking call and, as such, should return quickly.
 	OnPartitionWillRevoke SourcePartitionEventHandler
@@ -74,7 +77,23 @@ type Source struct {
 	config SourceConfig
 }
 
-func (s *Source) executeHandler(handler SourcePartitionEventHandler, partitions ...int32) {
+func (s *Source) onPartitionsAssigned(partitions []int32) {
+	s.executeHandler(s.config.OnPartitionAssigned, partitions)
+}
+
+func (s *Source) onPartitionWillRevoke(partition int32) {
+	s.executeHandler(s.config.OnPartitionWillRevoke, []int32{partition})
+}
+
+func (s *Source) onPartitionActivated(partition int32) {
+	s.executeHandler(s.config.OnPartitionAssigned, []int32{partition})
+}
+
+func (s *Source) onPartitionsRevoked(partitions []int32) {
+	s.executeHandler(s.config.OnPartitionRevoked, partitions)
+}
+
+func (s *Source) executeHandler(handler SourcePartitionEventHandler, partitions []int32) {
 	if handler != nil {
 		for _, p := range partitions {
 			handler(s, p)
@@ -120,27 +139,27 @@ func (s Source) stateCluster() Cluster {
 	return s.config.StateCluster
 }
 
-func minInSyncConfig(source *Source) string {
+func minInSyncConfig(source *Source) int {
 	factor := replicationFactorConfig(source)
 	if factor <= 1 {
-		return "1"
+		return 1
 	}
 	if source.config.MinInSync >= int(factor) {
-		return fmt.Sprintf("%d", source.config.ReplicationFactor-1)
+		return source.config.ReplicationFactor - 1
 	}
-	return fmt.Sprintf("%d", source.config.MinInSync)
+	return source.config.MinInSync
 }
 
-func replicationFactorConfig(source *Source) int16 {
+func replicationFactorConfig(source *Source) int {
 	if source.config.ReplicationFactor <= 0 {
 		return 1
 	}
-	return int16(source.config.ReplicationFactor)
+	return source.config.ReplicationFactor
 }
 
-func commitLogPartitionsConfig(source *Source) int32 {
+func commitLogPartitionsConfig(source *Source) int {
 	if source.config.CommitLogPartitions <= 0 {
-		return int32(5)
+		return 5
 	}
-	return int32(source.config.CommitLogPartitions)
+	return source.config.CommitLogPartitions
 }

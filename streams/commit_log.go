@@ -30,7 +30,7 @@ type eosCommitLog struct {
 	syncMux       sync.Mutex
 	numPartitions int32
 	topic         string
-	changeLog     GlobalChangeLog
+	changeLog     GlobalChangeLog[*eosCommitLog]
 }
 
 const intByteSize = int(unsafe.Sizeof(uintptr(1)))
@@ -65,7 +65,7 @@ func newEosCommitLog(source *Source, numPartitions int) *eosCommitLog {
 		numPartitions: int32(numPartitions),
 		topic:         source.CommitLogTopicNameForGroupId(),
 	}
-	cl.changeLog = NewGlobalChangeLog(source.stateCluster(), cl, numPartitions, cl.topic)
+	cl.changeLog = NewGlobalChangeLog(source.stateCluster(), cl, numPartitions, cl.topic, CompactCleanupPolicy)
 	return cl
 }
 

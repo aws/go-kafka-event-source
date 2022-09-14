@@ -21,16 +21,30 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+type CleanupPolicy int
+
+const (
+	CompactCleanupPolicy CleanupPolicy = iota
+	DeleteCleanupPolicy
+)
+
+type ChangeLogReceiver interface {
+	ReceiveChange(IncomingRecord) error
+}
+
 // A GlobalChangeLog is simply a consumer which continously consumes all partitions within the given topic and
 // forwards all records to it's StateStore. GlobalChangeLogs can be useful for sharing small amounts of data between
 // a group of hosts. For example, GKES uses a global change log to keep track of consumer group offsets.
-type GlobalChangeLog struct {
-	receiver StateStore
-	client   *kgo.Client
+type GlobalChangeLog[T ChangeLogReceiver] struct {
+	receiver      T
+	client        *kgo.Client
+	numPartitions int
+	topic         string
+	cleanupPolicy CleanupPolicy
 }
 
 // Creates a NewGlobalChangeLog consumer and forward all records to `receiver`.
-func NewGlobalChangeLog(cluster Cluster, receiver StateStore, numPartitions int, topic string) GlobalChangeLog {
+func NewGlobalChangeLog[T ChangeLogReceiver](cluster Cluster, receiver T, numPartitions int, topic string, cleanupPolicy CleanupPolicy) GlobalChangeLog[T] {
 	assignments := make(map[int32]kgo.Offset)
 	for i := 0; i < numPartitions; i++ {
 		assignments[int32(i)] = kgo.NewOffset().AtStart()
@@ -47,21 +61,46 @@ func NewGlobalChangeLog(cluster Cluster, receiver StateStore, numPartitions int,
 		panic(err)
 	}
 
-	return GlobalChangeLog{
-		client:   client,
-		receiver: receiver,
+	return GlobalChangeLog[T]{
+		client:        client,
+		receiver:      receiver,
+		numPartitions: numPartitions,
+		topic:         topic,
+		cleanupPolicy: cleanupPolicy,
 	}
 }
 
-func (cl GlobalChangeLog) Stop() {
+func (cl GlobalChangeLog[T]) PauseAllPartitions() {
+	allPartitions := make([]int32, int(cl.numPartitions))
+	for i := range allPartitions {
+		allPartitions[i] = int32(i)
+	}
+	cl.client.PauseFetchPartitions(map[string][]int32{cl.topic: allPartitions})
+}
+
+func (cl GlobalChangeLog[T]) Pause(partition int32) {
+	cl.client.PauseFetchPartitions(map[string][]int32{cl.topic: {partition}})
+}
+
+func (cl GlobalChangeLog[T]) ResumePartitionAt(partition int32, offset int64) {
+	cl.client.SetOffsets(map[string]map[int32]kgo.EpochOffset{
+		cl.topic: {partition: kgo.EpochOffset{
+			Offset: offset,
+			Epoch:  -1,
+		}},
+	})
+	cl.client.ResumeFetchPartitions(map[string][]int32{cl.topic: {partition}})
+}
+
+func (cl GlobalChangeLog[T]) Stop() {
 	cl.client.Close()
 }
 
-func (cl GlobalChangeLog) Start() {
+func (cl GlobalChangeLog[T]) Start() {
 	go cl.consume()
 }
 
-func (cl GlobalChangeLog) consume() {
+func (cl GlobalChangeLog[T]) consume() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		f := cl.client.PollFetches(ctx)
@@ -79,6 +118,9 @@ func (cl GlobalChangeLog) consume() {
 	}
 }
 
-func (cl GlobalChangeLog) forwardChange(r *kgo.Record) {
-	cl.receiver.ReceiveChange(newIncomingRecord(r))
+func (cl GlobalChangeLog[T]) forwardChange(r *kgo.Record) {
+	ir := newIncomingRecord(r)
+	if err := cl.receiver.ReceiveChange(ir); err != nil {
+		log.Errorf("GlobalChangeLog error for %+v, offset: %d, recordType: %s, error: %v", ir.TopicPartition(), ir.Offset(), ir.RecordType(), err)
+	}
 }

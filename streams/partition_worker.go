@@ -82,7 +82,6 @@ func newPartitionWorker[T StateStore](
 		runStatus:           eventSource.runStatus.Fork(),
 		highestOffset:       -1,
 	}
-	// pw.ctx, pw.cancel = context.WithCancel(context.Background())
 	go pw.pushRecords()
 	go pw.work(pw.eventSource.interjections, waiter, commitLog)
 
@@ -142,6 +141,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 		ij.init(pw.topicPartition, pw.interjectionChannel)
 		ij.tick()
 	}
+	pw.eventSource.source.onPartitionActivated(pw.topicPartition.Partition)
 	for {
 		select {
 		case record := <-pw.eventInput:

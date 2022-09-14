@@ -185,7 +185,7 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 	}
 	sc.incrBalancer.PartitionsAssigned(toTopicPartitions(topic, partitions...)...)
 	// notify observers
-	sc.source.executeHandler(sc.source.config.OnPartitionAssigned, partitions...)
+	sc.source.onPartitionsAssigned(partitions)
 }
 
 func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []int32) {
@@ -194,8 +194,9 @@ func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []in
 	if sc.partitionedStore == nil {
 		return
 	}
+
 	for _, p := range partitions {
-		sc.source.executeHandler(sc.source.config.OnPartitionWillRevoke, p)
+		sc.source.onPartitionWillRevoke(p)
 		if worker, ok := sc.workers[p]; ok {
 			worker.revoke()
 			delete(sc.workers, p)
@@ -203,7 +204,7 @@ func (sc *eventSourceConsumer[T]) revokePartitions(topic string, partitions []in
 		sc.partitionedStore.revoke(p)
 	}
 	// notify observers
-	sc.source.executeHandler(sc.source.config.OnPartitionRevoked, partitions...)
+	sc.source.onPartitionsRevoked(partitions)
 }
 
 func (sc *eventSourceConsumer[T]) partitionsAssigned(ctx context.Context, _ *kgo.Client, assignments map[string][]int32) {
