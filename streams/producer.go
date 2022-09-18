@@ -43,12 +43,9 @@ type Producer struct {
 }
 
 // Create a new Producer. Destination provides cluster connect information.
-func NewProducer(destination Destination) *Producer {
-	client, err := NewClient(
-		destination.Cluster,
-		kgo.ProducerLinger(5*time.Millisecond),
-		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)))
-
+func NewProducer(destination Destination, opts ...kgo.Opt) *Producer {
+	opts = append(opts, kgo.ProducerLinger(5*time.Millisecond), kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)))
+	client, err := NewClient(destination.Cluster, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -83,6 +80,10 @@ func (p *Producer) ProduceAsync(ctx context.Context, record *Record, callback fu
 			callback(record, kErr)
 		}
 	})
+}
+
+func (p *Producer) Close() {
+	p.client.Close()
 }
 
 type EventSourceProducer[T any] struct {
@@ -126,7 +127,7 @@ func (b *produceBatcher[T]) Key() TopicPartition {
 
 func (b *produceBatcher[T]) cleanup() {
 	for _, r := range b.records {
-		r.release()
+		r.Release()
 	}
 	b.records = nil
 }

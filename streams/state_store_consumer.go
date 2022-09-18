@@ -121,7 +121,7 @@ func (ssp *stateStorePartition[T]) setState(state partitionState) {
 	atomic.StoreUint32((*uint32)(&ssp.state), uint32(state))
 }
 
-func (ssp *stateStorePartition[T]) prep(intitialState partitionState, store *changeLogPartition[T]) {
+func (ssp *stateStorePartition[T]) prep(intitialState partitionState, store changeLogPartition[T]) {
 	ssp.setState(intitialState)
 	ssp.count = 0
 	ssp.buffer = make(chan []*kgo.Record, 1024)
@@ -155,7 +155,7 @@ func (ssp *stateStorePartition[T]) isCompletionMarker(val []byte) (complete bool
 	return
 }
 
-func (ssp *stateStorePartition[T]) populate(store *changeLogPartition[T]) {
+func (ssp *stateStorePartition[T]) populate(store changeLogPartition[T]) {
 	log.Debugf("starting populator for %+v", ssp.topicPartition)
 	for records := range ssp.buffer {
 		if !ssp.handleRecordsAndContinue(records, store) {
@@ -165,7 +165,7 @@ func (ssp *stateStorePartition[T]) populate(store *changeLogPartition[T]) {
 	}
 }
 
-func (ssp *stateStorePartition[T]) handleRecordsAndContinue(records []*kgo.Record, store *changeLogPartition[T]) bool {
+func (ssp *stateStorePartition[T]) handleRecordsAndContinue(records []*kgo.Record, store changeLogPartition[T]) bool {
 	for _, record := range records {
 		if isMarkerRecord(record) {
 			if ssp.isCompletionMarker(record.Value) {
@@ -270,7 +270,7 @@ func (ssc *stateStoreConsumer[T]) cancelPartition(p int32) {
 	ssp.cancel()
 }
 
-func (ssc *stateStoreConsumer[T]) preparePartition(p int32, store *changeLogPartition[T]) *stateStorePartition[T] {
+func (ssc *stateStoreConsumer[T]) preparePartition(p int32, store changeLogPartition[T]) *stateStorePartition[T] {
 	ssc.mux.Lock()
 	defer ssc.mux.Unlock()
 	ssp := ssc.partitions[p]
@@ -278,7 +278,7 @@ func (ssc *stateStoreConsumer[T]) preparePartition(p int32, store *changeLogPart
 	return ssp
 }
 
-func (ssc *stateStoreConsumer[T]) activatePartition(p int32, store *changeLogPartition[T]) *stateStorePartition[T] {
+func (ssc *stateStoreConsumer[T]) activatePartition(p int32, store changeLogPartition[T]) *stateStorePartition[T] {
 	ssc.mux.Lock()
 	defer ssc.mux.Unlock()
 	ssp := ssc.partitions[p]

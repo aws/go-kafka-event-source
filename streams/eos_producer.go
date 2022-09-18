@@ -65,7 +65,7 @@ type recordAndEventContext[T any] struct {
 	eventContext *EventContext[T]
 }
 
-type eosProducerPool[T any] struct {
+type eosProducerPool[T StateStore] struct {
 	producerNodeQueue chan *producerNode[T]
 	onDeck            *producerNode[T]
 	commitQueue       chan *producerNode[T]
@@ -78,10 +78,10 @@ type eosProducerPool[T any] struct {
 	partitionOwners   partitionOwners[T]
 	sllLock           sync.Mutex // lock for out singly linked list of EventContexts
 	startTime         time.Time
-	cluster           Cluster
+	// cluster           Cluster
 }
 
-func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, cfg EosConfig) *eosProducerPool[T] {
+func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client) *eosProducerPool[T] {
 	if cfg.IsZero() {
 		cfg = DefaultEosConfig
 	}
@@ -97,10 +97,9 @@ func newEOSProducerPool[T StateStore](cluster Cluster, commitLog *eosCommitLog, 
 			mux:    new(sync.Mutex),
 		},
 		flushTimer: time.NewTicker(noPendingDuration),
-		cluster:    cluster,
 	}
 	for i := 0; i < cfg.PoolSize; i++ {
-		p := newProducerNode(i, cluster, commitLog, pp.partitionOwners)
+		p := newProducerNode(i, source, commitLog, pp.partitionOwners, commitClient)
 		pp.producerNodes = append(pp.producerNodes, p)
 		pp.producerNodeQueue <- p
 	}
@@ -236,23 +235,24 @@ type eventContextDll[T any] struct {
 
 type producerNode[T any] struct {
 	client           *kgo.Client
+	commitClient     *kgo.Client
 	commitLog        *eosCommitLog
 	recordsToProduce []recordAndEventContext[T]
 	eventContextCnt  int
 	currentParitions map[int32]eventContextDll[T]
 	partitionOwners  partitionOwners[T]
+	shouldMarkCommit bool
 	commitWaiter     sync.Mutex // this is a mutex masquerading as a WaitGroup
 	partitionLock    sync.RWMutex
 	produceLock      sync.Mutex
 	firstEvent       time.Time
 	id               int
-	committing       bool
 	// errs                  []error
 }
 
-func newProducerNode[T StateStore](id int, cluster Cluster, commitLog *eosCommitLog, partitionOwners partitionOwners[T]) *producerNode[T] {
+func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitLog, partitionOwners partitionOwners[T], commitClient *kgo.Client) *producerNode[T] {
 	client, err := NewClient(
-		cluster,
+		source.stateCluster(),
 		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
 		kgo.TransactionalID(uuid.NewString()),
 		kgo.TransactionTimeout(6*time.Second),
@@ -260,9 +260,12 @@ func newProducerNode[T StateStore](id int, cluster Cluster, commitLog *eosCommit
 	if err != nil {
 		panic(err)
 	}
-	return &producerNode[T]{client: client,
+	return &producerNode[T]{
+		client:           client,
+		commitClient:     commitClient,
 		id:               id,
 		commitLog:        commitLog,
+		shouldMarkCommit: source.shouldMarkCommit(),
 		currentParitions: make(map[int32]eventContextDll[T]),
 		partitionOwners:  partitionOwners,
 	}
@@ -397,16 +400,24 @@ func (p *producerNode[T]) commit() error {
 		p.clearRevokedState()
 		log.Errorf("commit error: %v", err)
 	}
-	p.committing = false
 	return err
 }
 
 func (p *producerNode[T]) clearState() {
+	if p.shouldMarkCommit {
+		for _, ecs := range p.currentParitions {
+			for ec := ecs.tail; ec != nil; ec = ec.prev {
+				if !ec.IsInterjection() {
+					p.commitClient.MarkCommitRecords(&ec.input.kRecord)
+				}
+			}
+		}
+	}
 	p.eventContextCnt = 0
 	var empty recordAndEventContext[T]
 	for i, rtp := range p.recordsToProduce {
 		rtp.eventContext.producer = nil
-		rtp.eventContext.input.kRecord = nil
+		rtp.eventContext.input.kRecord = kgo.Record{}
 		rtp.eventContext.prev = nil
 		rtp.eventContext.next = nil
 		p.recordsToProduce[i] = empty
@@ -460,6 +471,6 @@ func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
 			// p.errs = append(p.errs, err)
 			log.Errorf("%v, record %v", err, r)
 		}
-		record.release()
+		record.Release()
 	})
 }

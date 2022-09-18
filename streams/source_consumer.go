@@ -31,15 +31,14 @@ type eventSourceConsumer[T StateStore] struct {
 	stateStoreConsumer *stateStoreConsumer[T]
 	ctx                context.Context
 	workers            map[int32]*partitionWorker[T]
-
-	prepping     map[int32]*stateStorePartition[T]
-	workerMux    sync.Mutex
-	preppingMux  sync.Mutex
-	incrBalancer IncrementalGroupRebalancer
-	eventSource  *EventSource[T]
-	source       *Source
-	commitLog    *eosCommitLog
-	producerPool *eosProducerPool[T]
+	prepping           map[int32]*stateStorePartition[T]
+	workerMux          sync.Mutex
+	preppingMux        sync.Mutex
+	incrBalancer       IncrementalGroupRebalancer
+	eventSource        *EventSource[T]
+	source             *Source
+	commitLog          *eosCommitLog
+	producerPool       *eosProducerPool[T]
 	// prepping           map[int32]*partitionPrepper[T]
 }
 
@@ -48,11 +47,9 @@ type eventSourceConsumer[T StateStore] struct {
 func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additionalClientOptions ...kgo.Opt) (*eventSourceConsumer[T], error) {
 	cl := newEosCommitLog(eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
 	var partitionedStore *partitionedChangeLog[T]
-	var producerPool *eosProducerPool[T]
 	source := eventSource.source
 
 	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.ChangeLogTopicName())
-	producerPool = newEOSProducerPool[T](source.stateCluster(), cl, source.config.EosConfig)
 
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,
@@ -62,7 +59,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		eventSource:      eventSource,
 		source:           source,
 		commitLog:        cl,
-		producerPool:     producerPool,
 	}
 	balanceStrategies := source.config.BalanceStrategies
 	if len(balanceStrategies) == 0 {
@@ -71,13 +67,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	}
 	groupBalancers := toGroupBalancers(sc, balanceStrategies)
 	balancerOpt := kgo.Balancers(groupBalancers...)
-
-	for _, gb := range groupBalancers {
-		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
-			sc.incrBalancer = igr
-			break
-		}
-	}
 	opts := []kgo.Opt{
 		balancerOpt,
 		kgo.ConsumerGroup(source.config.GroupId),
@@ -88,14 +77,29 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		kgo.SessionTimeout(6 * time.Second),
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 		kgo.FetchMaxWait(time.Second),
-		kgo.DisableAutoCommit(),
 		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign)}
 
 	if len(additionalClientOptions) > 0 {
 		opts = append(opts, additionalClientOptions...)
 	}
+
+	if source.shouldMarkCommit() {
+		// we're in a migrating consumer group (non-GKES to GKES otr vice-versa)
+		opts = append(opts, kgo.AutoCommitMarks(), kgo.AutoCommitInterval(time.Second*5))
+	} else {
+		opts = append(opts, kgo.DisableAutoCommit())
+	}
 	client, err := NewClient(
 		source.config.SourceCluster, opts...)
+
+	sc.producerPool = newEOSProducerPool[T](source, cl, source.config.EosConfig, client)
+
+	for _, gb := range groupBalancers {
+		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
+			sc.incrBalancer = igr
+			break
+		}
+	}
 	sc.client = client
 	sc.stateStoreConsumer = mewStateStoreConsumer[T](source)
 	if err != nil {

@@ -47,20 +47,22 @@ type partitionWorker[T StateStore] struct {
 	stopSignal          chan struct{}
 	revokedSignal       chan struct{}
 	stopped             chan struct{}
-	changeLog           *changeLogPartition[T]
+	changeLog           changeLogPartition[T]
 	eventSource         *EventSource[T]
 	runStatus           sak.RunStatus
 	pending             int64
 	processed           int64
 	highestOffset       int64
-	topicPartition      TopicPartition
+	// eventContextPool    []*EventContext[T]
+	// eventContextLock    sync.Mutex
+	topicPartition TopicPartition
 }
 
 func newPartitionWorker[T StateStore](
 	eventSource *EventSource[T],
 	topicPartition TopicPartition,
 	commitLog *eosCommitLog,
-	changeLog *changeLogPartition[T],
+	changeLog changeLogPartition[T],
 	eosProducer *eosProducerPool[T],
 	waiter func()) *partitionWorker[T] {
 
@@ -146,7 +148,8 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 		select {
 		case record := <-pw.eventInput:
 			if record != nil {
-				pw.handleEvent(newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw))
+				ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
+				pw.handleEvent(ec)
 			}
 		case job := <-pw.asyncCompleter.asyncJobs:
 			// TODO: if the partition was reject and we have not tried to produce yet

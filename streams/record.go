@@ -52,9 +52,14 @@ func NewRecord() *Record {
 	return reusableRecordPool.Get().(*Record)
 }
 
+type IncomingRecord struct {
+	kRecord    kgo.Record
+	recordType string
+}
+
 func newIncomingRecord(incoming *kgo.Record) IncomingRecord {
 	r := IncomingRecord{
-		kRecord: incoming,
+		kRecord: *incoming,
 	}
 	for _, header := range incoming.Headers {
 		if header.Key == RecordTypeHeaderKey {
@@ -62,11 +67,6 @@ func newIncomingRecord(incoming *kgo.Record) IncomingRecord {
 		}
 	}
 	return r
-}
-
-type IncomingRecord struct {
-	kRecord    *kgo.Record
-	recordType string
 }
 
 func (r IncomingRecord) Offset() int64 {
@@ -97,8 +97,21 @@ func (r IncomingRecord) Value() []byte {
 	return r.kRecord.Value
 }
 
+func (r IncomingRecord) Headers() []kgo.RecordHeader {
+	return r.kRecord.Headers
+}
+
+func (r IncomingRecord) HeaderValue(name string) []byte {
+	for _, v := range r.kRecord.Headers {
+		if v.Key == name {
+			return v.Value
+		}
+	}
+	return nil
+}
+
 func (r IncomingRecord) isMarkerRecord() bool {
-	return isMarkerRecord(r.kRecord)
+	return isMarkerRecord(&r.kRecord)
 }
 
 func (r *Record) Offset() int64 {
@@ -139,6 +152,26 @@ func (r *Record) ValueWriter() *bytes.Buffer {
 
 func (r *Record) WithTopic(topic string) *Record {
 	r.kRecord.Topic = topic
+	return r
+}
+
+func (r *Record) WithKey(key ...[]byte) *Record {
+	r.WriteKey(key...)
+	return r
+}
+
+func (r *Record) WithKeyString(key ...string) *Record {
+	r.WriteKeyString(key...)
+	return r
+}
+
+func (r *Record) WithValue(value ...[]byte) *Record {
+	r.WriteValue(value...)
+	return r
+}
+
+func (r *Record) WithHeader(key string, value []byte) *Record {
+	r.kRecord.Headers = append(r.kRecord.Headers, kgo.RecordHeader{Key: key, Value: value})
 	return r
 }
 
@@ -186,7 +219,7 @@ func SetRecordType(r *kgo.Record, recordType string) {
 	})
 }
 
-func (r *Record) release() {
+func (r *Record) Release() {
 	r.kRecord = kgo.Record{
 		Partition: AutoAssign,
 		Key:       nil,

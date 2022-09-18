@@ -33,12 +33,12 @@ type EventContext[T any] struct {
 	next           *EventContext[T]
 	prev           *EventContext[T]
 	producer       *producerNode[T]
-	changeLog      *changeLogData[T]
 	pendingRecords *pendingRecords
 	input          IncomingRecord
 	asynCompleter  asyncCompleter[T]
-	produceLock    sync.Mutex
+	changeLog      changeLogData[T]
 	wg             sync.WaitGroup
+	produceLock    sync.Mutex
 	topicPartition TopicPartition
 	isInterjection bool
 	mustProduce    bool
@@ -96,7 +96,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 	ec.produceLock.Lock()
 	defer ec.produceLock.Unlock()
 	for _, entry := range entries {
-		if ec.changeLog != nil {
+		if len(ec.changeLog.topic) > 0 {
 			log.Tracef("RecordChange changeLogTopic: %s, topicPartition: %+v, value: %v", ec.changeLog.topic, ec.topicPartition, entry)
 			record := entry.record.
 				WithTopic(ec.changeLog.topic).
@@ -185,7 +185,7 @@ func releasePendingRecords(pending *pendingRecords) {
 	pendingRecordPool.Put(pending)
 }
 
-func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog *changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
+func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	input := newIncomingRecord(record)
 	ec := &EventContext[T]{
 		ctx:            ctx,
@@ -200,7 +200,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 	return ec
 }
 
-func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog *changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
+func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
 		ctx:            ctx,
 		topicPartition: topicPartition,

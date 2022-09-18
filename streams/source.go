@@ -18,7 +18,7 @@ import "fmt"
 
 type SourcePartitionEventHandler func(*Source, int32)
 
-type SourceConfig struct {
+type EventSourceConfig struct {
 	// The group id for the underlying Kafka consumer group.
 	GroupId string
 	// The Kafka Topic to consume
@@ -31,15 +31,14 @@ type SourceConfig struct {
 	MinInSync int
 	// The number of Kafka partitions to use for the applications commit log. Defaults to 5 if unset.
 	CommitLogPartitions int
-	// The Kafka cluster on which Topic resides.
+	// The Kafka cluster on which Topic resides, or the source of incoming events.
 	SourceCluster Cluster
 	// StateCluster is the Kafka cluster on which the commit log and the StateStore topic resides. If left unset (recommended), defaults to SourceCluster.
 	StateCluster Cluster
 	// The consumer rebalance strategies to use for the underlying Kafka consumer group.
 	BalanceStrategies []BalanceStrategy
 	/*
-		CommitOffsets should be set to true
-		if you are migrating from a traditional consumer group.
+		CommitOffsets should be set to true if you are migrating from a traditional consumer group.
 		This will ensure that the offsets are commited to the consumer group
 		when in a mixed fleet scenario (migrating into an EventSource from a standard consumer).
 		If the deploytment fails, the original non-EventSource application can then
@@ -74,7 +73,15 @@ type SourceConfig struct {
 }
 
 type Source struct {
-	config SourceConfig
+	config EventSourceConfig
+}
+
+func (s *Source) AsDestination() Destination {
+	return Destination{
+		DefaultTopic:  s.config.Topic,
+		NumPartitions: s.config.NumPartitions,
+		Cluster:       s.config.SourceCluster,
+	}
 }
 
 func (s *Source) onPartitionsAssigned(partitions []int32) {
@@ -93,6 +100,10 @@ func (s *Source) onPartitionsRevoked(partitions []int32) {
 	s.executeHandler(s.config.OnPartitionRevoked, partitions)
 }
 
+func (s *Source) shouldMarkCommit() bool {
+	return s.config.CommitOffsets
+}
+
 func (s *Source) executeHandler(handler SourcePartitionEventHandler, partitions []int32) {
 	if handler != nil {
 		for _, p := range partitions {
@@ -109,7 +120,7 @@ func (s *Source) GroupId() string {
 	return s.config.GroupId
 }
 
-func (s *Source) Config() SourceConfig {
+func (s *Source) Config() EventSourceConfig {
 	return s.config
 }
 
@@ -132,7 +143,7 @@ func (s *Source) ChangeLogTopicName() string {
 }
 
 // Returns Source.StateCluster if defined, otherwise Source.Cluster
-func (s Source) stateCluster() Cluster {
+func (s *Source) stateCluster() Cluster {
 	if s.config.StateCluster == nil {
 		return s.config.SourceCluster
 	}

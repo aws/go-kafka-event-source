@@ -121,7 +121,7 @@ func ExampleEventSource() {
 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
 
 	contactsCluster := streams.SimpleCluster([]string{"127.0.0.1:9092"})
-	sourceConfig := streams.SourceConfig{
+	sourceConfig := streams.EventSourceConfig{
 		GroupId:       "ExampleEventSourceGroup",
 		Topic:         "ExampleEventSource",
 		NumPartitions: 10,
@@ -183,7 +183,7 @@ func ExampleAsyncJobScheduler() {
 	streams.InitLogger(streams.SimpleLogger(streams.LogLevelError), streams.LogLevelError)
 
 	contactsCluster := streams.SimpleCluster([]string{"127.0.0.1:9092"})
-	sourceConfig := streams.SourceConfig{
+	sourceConfig := streams.EventSourceConfig{
 		GroupId:       "ExampleAsyncJobSchedulerGroup",
 		Topic:         "ExampleAsyncJobScheduler",
 		NumPartitions: 10,

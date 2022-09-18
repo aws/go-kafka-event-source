@@ -204,7 +204,7 @@ func isNetworkError(err error) bool {
 // Automatically invoked as part of NewSourceConsumer(). Ignores errros TOPIC_ALREADT_EXISTS errors.
 // Returns a corrected Source where NumPartitions and CommitLogPartitions are pulled from a ListTopics call. This is to prevent drift errors.
 // Returns an error if the details for Source topics could not be retrieved, or if there is a mismatch in partition counts fo the source topic and change log topic.
-func CreateSource(sourceConfig SourceConfig) (resolved *Source, err error) {
+func CreateSource(sourceConfig EventSourceConfig) (resolved *Source, err error) {
 	source := &Source{sourceConfig}
 	for retryCount := 0; retryCount < 15; retryCount++ {
 		resolved, err = createSource(source)
@@ -256,7 +256,7 @@ func resolveTopicMetadata(source *Source, sourceTopicAdminClient, eosAdminClient
 
 // Deletes all topics associated with a Source. Provided for local testing purpoose only.
 // Do not call this in deployed applications unless your topics are transient in nature.
-func DeleteSource(sourceConfig SourceConfig) error {
+func DeleteSource(sourceConfig EventSourceConfig) error {
 	source := &Source{sourceConfig}
 	sourceTopicClient, err := NewClient(source.config.SourceCluster)
 	if err != nil {
