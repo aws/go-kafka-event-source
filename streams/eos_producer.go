@@ -416,8 +416,8 @@ func (p *producerNode[T]) clearState() {
 	p.eventContextCnt = 0
 	var empty recordAndEventContext[T]
 	for i, rtp := range p.recordsToProduce {
+		rtp.record.Release()
 		rtp.eventContext.producer = nil
-		rtp.eventContext.input.kRecord = kgo.Record{}
 		rtp.eventContext.prev = nil
 		rtp.eventContext.next = nil
 		p.recordsToProduce[i] = empty
@@ -471,6 +471,5 @@ func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
 			// p.errs = append(p.errs, err)
 			log.Errorf("%v, record %v", err, r)
 		}
-		record.Release()
 	})
 }

@@ -35,6 +35,11 @@ const AutoAssign = int32(-1)
 var reusableRecordPool = sync.Pool{
 	New: func() any {
 		return &Record{
+			kRecord: kgo.Record{
+				Partition: AutoAssign,
+				Key:       nil,
+				Value:     nil,
+			},
 			keyBuffer:   bytes.NewBuffer(nil),
 			valueBuffer: bytes.NewBuffer(nil),
 		}
