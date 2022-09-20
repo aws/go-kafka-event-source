@@ -93,7 +93,7 @@ func (s *Source) onPartitionWillRevoke(partition int32) {
 }
 
 func (s *Source) onPartitionActivated(partition int32) {
-	s.executeHandler(s.config.OnPartitionAssigned, []int32{partition})
+	s.executeHandler(s.config.OnPartitionActivated, []int32{partition})
 }
 
 func (s *Source) onPartitionsRevoked(partitions []int32) {

@@ -114,8 +114,10 @@ func (pw *partitionWorker[T]) pushRecords() {
 	for {
 		select {
 		case records := <-pw.input:
-			for _, record := range records {
-				pw.eventInput <- record
+			if !pw.isRevoked() {
+				for _, record := range records {
+					pw.eventInput <- record
+				}
 			}
 		case <-pw.runStatus.Done():
 			log.Debugf("Closing worker for %+v", pw.topicPartition)
