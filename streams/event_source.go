@@ -26,21 +26,6 @@ import (
 )
 
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
-type MetricsHandler func(interface{})
-type Metric struct {
-	StartMicro int64
-	EndMicro   int64
-	Count      int64
-	Bytes      int64
-	Partition  int32
-	Operation  string
-	Topic      string
-}
-
-func (m Metric) Duration() time.Duration {
-	return time.Duration(m.EndMicro-m.StartMicro) / time.Microsecond
-}
-
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
 type EventSource[T StateStore] struct {
 	root              *eventProcessorWrapper[T]
@@ -90,6 +75,9 @@ func (es *EventSource[T]) ConsumeEvents() {
 
 func (es *EventSource[T]) EmitMetric(m Metric) {
 	if es.metrics != nil {
+		if m.ExecuteMicro == 0 {
+			m.ExecuteMicro = m.StartMicro
+		}
 		select {
 		case es.metrics <- m:
 		default:

@@ -81,7 +81,7 @@ type eosProducerPool[T StateStore] struct {
 	// cluster           Cluster
 }
 
-func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client) *eosProducerPool[T] {
+func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client, metrics chan Metric) *eosProducerPool[T] {
 	if cfg.IsZero() {
 		cfg = DefaultEosConfig
 	}
@@ -99,7 +99,7 @@ func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, c
 		flushTimer: time.NewTicker(noPendingDuration),
 	}
 	for i := 0; i < cfg.PoolSize; i++ {
-		p := newProducerNode(i, source, commitLog, pp.partitionOwners, commitClient)
+		p := newProducerNode(i, source, commitLog, pp.partitionOwners, commitClient, metrics)
 		pp.producerNodes = append(pp.producerNodes, p)
 		pp.producerNodeQueue <- p
 	}
@@ -237,6 +237,8 @@ type producerNode[T any] struct {
 	client           *kgo.Client
 	commitClient     *kgo.Client
 	commitLog        *eosCommitLog
+	metrics          chan Metric
+	source           *Source
 	recordsToProduce []recordAndEventContext[T]
 	eventContextCnt  int
 	currentParitions map[int32]eventContextDll[T]
@@ -251,7 +253,7 @@ type producerNode[T any] struct {
 	// errs                  []error
 }
 
-func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitLog, partitionOwners partitionOwners[T], commitClient *kgo.Client) *producerNode[T] {
+func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitLog, partitionOwners partitionOwners[T], commitClient *kgo.Client, metrics chan Metric) *producerNode[T] {
 	client, err := NewClient(
 		source.stateCluster(),
 		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
@@ -263,7 +265,9 @@ func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitL
 	}
 	return &producerNode[T]{
 		client:           client,
+		metrics:          metrics,
 		commitClient:     commitClient,
+		source:           source,
 		id:               id,
 		commitLog:        commitLog,
 		shouldMarkCommit: source.shouldMarkCommit(),
@@ -377,6 +381,7 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 }
 
 func (p *producerNode[T]) commit() error {
+	commitStart := time.Now()
 	defer p.commitWaiter.Unlock()
 	for tp := range p.currentParitions {
 		p.partitionOwners.set(tp, p)
@@ -395,17 +400,14 @@ func (p *producerNode[T]) commit() error {
 	err = p.client.EndTransaction(context.Background(), kgo.TryCommit)
 	if err != nil {
 		log.Errorf("eos producer txn error: %v", err)
-	}
-	if err == nil {
-		p.clearState()
-	} else {
 		p.clearRevokedState()
-		log.Errorf("commit error: %v", err)
+	} else {
+		p.clearState(commitStart)
 	}
 	return err
 }
 
-func (p *producerNode[T]) clearState() {
+func (p *producerNode[T]) clearState(executionTime time.Time) {
 	if p.shouldMarkCommit {
 		for _, ecs := range p.currentParitions {
 			for ec := ecs.tail; ec != nil; ec = ec.prev {
@@ -415,14 +417,37 @@ func (p *producerNode[T]) clearState() {
 			}
 		}
 	}
+
+	byteCount := 0
 	p.eventContextCnt = 0
 	var empty recordAndEventContext[T]
 	for i, rtp := range p.recordsToProduce {
+		byteCount += len(rtp.record.kRecord.Key)
+		byteCount += len(rtp.record.kRecord.Value)
+		for _, h := range rtp.record.kRecord.Headers {
+			byteCount += len(h.Key)
+			byteCount += len(h.Value)
+		}
 		rtp.record.Release()
 		rtp.eventContext.producer = nil
 		rtp.eventContext.prev = nil
 		rtp.eventContext.next = nil
 		p.recordsToProduce[i] = empty
+	}
+
+	if p.metrics != nil && len(p.recordsToProduce) > 0 {
+		p.metrics <- Metric{
+			Operation:      TxnCommitOperation,
+			Topic:          p.source.Topic(),
+			GroupId:        p.source.GroupId(),
+			StartMicro:     p.firstEvent.UnixMicro(),
+			ExecuteMicro:   executionTime.UnixMicro(),
+			EndMicro:       time.Now().UnixMicro(),
+			Count:          len(p.recordsToProduce),
+			Bytes:          byteCount,
+			PartitionCount: len(p.currentParitions),
+			Partition:      -1,
+		}
 	}
 
 	for tp := range p.currentParitions {

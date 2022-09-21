@@ -39,6 +39,7 @@ type eventSourceConsumer[T StateStore] struct {
 	source             *Source
 	commitLog          *eosCommitLog
 	producerPool       *eosProducerPool[T]
+	metrics            chan Metric
 	// prepping           map[int32]*partitionPrepper[T]
 }
 
@@ -48,7 +49,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	cl := newEosCommitLog(eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
 	var partitionedStore *partitionedChangeLog[T]
 	source := eventSource.source
-
 	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.ChangeLogTopicName())
 
 	sc := &eventSourceConsumer[T]{
@@ -59,6 +59,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		eventSource:      eventSource,
 		source:           source,
 		commitLog:        cl,
+		metrics:          eventSource.metrics,
 	}
 	balanceStrategies := source.config.BalanceStrategies
 	if len(balanceStrategies) == 0 {
@@ -92,7 +93,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	client, err := NewClient(
 		source.config.SourceCluster, opts...)
 
-	sc.producerPool = newEOSProducerPool[T](source, cl, source.config.EosConfig, client)
+	sc.producerPool = newEOSProducerPool[T](source, cl, source.config.EosConfig, client, eventSource.metrics)
 
 	for _, gb := range groupBalancers {
 		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
