@@ -99,7 +99,7 @@ func (cfg EosConfig) validate() {
 const DefaultPoolSize = 3
 const DefaultPendingTxnCount = 1
 const DefaultTargetBatchSize = 100
-const DefaultMaxBatchSize = 10000
+const DefaultMaxBatchSize = 20000
 const DefaultBatchDelay = 10 * time.Millisecond
 
 var DefaultEosConfig = EosConfig{

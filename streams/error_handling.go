@@ -23,13 +23,31 @@ const (
 	// Instructs GKES to immediately stop processing the partition in error. If using an IncermentalBalancer, this partition will go into a `Fail`
 	// mode and be reassigned to another consumer.
 	FailPartition
+
+	// Instructs GKES to immediately stop processing the partition in error. Also instructs the consumer to leave the group.
+	// If using an IncermentalBalancer, the leave will be graceful. Tgis stratgey is recommnded for identifying bad deployments. The idea would be to capture
+	// this event via metrics and Alarm, causing a graceful rollback.
+	FailConsumer
+
 	// As the name implies, the application will fatally exit.
 	FatallyExit
 )
 
-type ErrorHandler[T any] func(ec *EventContext[T], eventType string, err error) ErrorResponse
+type ErrorContext interface {
+	TopicPartition() TopicPartition
+	Offset() int64
+	Input() (IncomingRecord, bool)
+}
 
-func DefaultDeserializationErrorHandler[T any](ec *EventContext[T], eventType string, err error) ErrorResponse {
+type DeserializationErrorHandler func(ec ErrorContext, eventType string, err error) ErrorResponse
+type EosErrorHandler func(topicPartition TopicPartition, err error) ErrorResponse
+
+func DefaultDeserializationErrorHandler(ec ErrorContext, eventType string, err error) ErrorResponse {
 	log.Errorf("failed to deserialize record for %+v, offset: %d, eventType: %s,error: %v", ec.TopicPartition(), ec.Offset(), eventType, err)
 	return CompleteAndContinue
+}
+
+func DefaultEosErrorHandler(topicPartition TopicPartition, err error) ErrorResponse {
+	log.Errorf("failing consumer due to eos failure in %+v, error: %v", topicPartition, err)
+	return FailConsumer
 }

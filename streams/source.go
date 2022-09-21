@@ -69,7 +69,9 @@ type EventSourceConfig struct {
 	OnPartitionWillRevoke SourcePartitionEventHandler
 	// Called when a partition has been revoked from the EventSource consumer client.
 	// This handler is invoked after GKES has stopped processing and has finished removing any associated resources for the partition.
-	OnPartitionRevoked SourcePartitionEventHandler
+	OnPartitionRevoked          SourcePartitionEventHandler
+	DeserializationErrorHandler DeserializationErrorHandler
+	EosErrorHandler             EosErrorHandler
 }
 
 type Source struct {
@@ -102,6 +104,20 @@ func (s *Source) onPartitionsRevoked(partitions []int32) {
 
 func (s *Source) shouldMarkCommit() bool {
 	return s.config.CommitOffsets
+}
+
+func (s *Source) eosErrorHandler() EosErrorHandler {
+	if s.config.EosErrorHandler == nil {
+		return DefaultEosErrorHandler
+	}
+	return s.config.EosErrorHandler
+}
+
+func (s *Source) deserializationErrorHandler() DeserializationErrorHandler {
+	if s.config.EosErrorHandler == nil {
+		return DefaultDeserializationErrorHandler
+	}
+	return s.config.DeserializationErrorHandler
 }
 
 func (s *Source) executeHandler(handler SourcePartitionEventHandler, partitions []int32) {

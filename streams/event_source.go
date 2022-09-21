@@ -43,17 +43,16 @@ func (m Metric) Duration() time.Duration {
 
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
 type EventSource[T StateStore] struct {
-	root                        *eventProcessorWrapper[T]
-	tail                        *eventProcessorWrapper[T]
-	stateStoreFactory           StateStoreFactory[T]
-	defaultProcessor            EventProcessor[T, IncomingRecord]
-	consumer                    *eventSourceConsumer[T]
-	interjections               []interjection[T]
-	source                      *Source
-	deserializationErrorHandler ErrorHandler[T]
-	runStatus                   sak.RunStatus
-	done                        chan struct{}
-	metrics                     chan Metric
+	root              *eventProcessorWrapper[T]
+	tail              *eventProcessorWrapper[T]
+	stateStoreFactory StateStoreFactory[T]
+	defaultProcessor  EventProcessor[T, IncomingRecord]
+	consumer          *eventSourceConsumer[T]
+	interjections     []interjection[T]
+	source            *Source
+	runStatus         sak.RunStatus
+	done              chan struct{}
+	metrics           chan Metric
 }
 
 // Create an EventSource.
@@ -70,13 +69,12 @@ func NewEventSource[T StateStore](sourceConfig EventSourceConfig, stateStoreFact
 	}
 
 	es := &EventSource[T]{
-		defaultProcessor:            defaultProcessor,
-		stateStoreFactory:           stateStoreFactory,
-		source:                      source,
-		deserializationErrorHandler: DefaultDeserializationErrorHandler[T],
-		runStatus:                   sak.NewRunStatus(context.Background()),
-		done:                        make(chan struct{}, 1),
-		metrics:                     metrics,
+		defaultProcessor:  defaultProcessor,
+		stateStoreFactory: stateStoreFactory,
+		source:            source,
+		runStatus:         sak.NewRunStatus(context.Background()),
+		done:              make(chan struct{}, 1),
+		metrics:           metrics,
 	}
 	es.consumer, err = newEventSourceConsumer(es, additionalClientOptions...)
 	return es, err
@@ -344,7 +342,7 @@ type EventProcessor[T any, V any] func(*EventContext[T], V) (ExecutionState, err
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
 func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
-	ep := newEventProcessorWrapper(eventType, transformer, eventProcessor, es.deserializationErrorHandler)
+	ep := newEventProcessorWrapper(eventType, transformer, eventProcessor, es.source.deserializationErrorHandler())
 	if es.root == nil {
 		es.root, es.tail = ep, ep
 	} else {
@@ -371,7 +369,7 @@ type eventProcessorWrapper[T any] struct {
 type eventProcessorExecutor[T any, V any] struct {
 	process                    EventProcessor[T, V]
 	decode                     IncomingRecordDecoder[V]
-	handleDeserializationError ErrorHandler[T]
+	handleDeserializationError DeserializationErrorHandler
 }
 
 func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
@@ -386,7 +384,7 @@ func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record Incomi
 }
 
 func newEventProcessorWrapper[T any, V any](eventType string, decoder IncomingRecordDecoder[V],
-	eventProcessor EventProcessor[T, V], deserializationErrorHandler ErrorHandler[T]) *eventProcessorWrapper[T] {
+	eventProcessor EventProcessor[T, V], deserializationErrorHandler DeserializationErrorHandler) *eventProcessorWrapper[T] {
 	return &eventProcessorWrapper[T]{
 		eventType: eventType,
 		eventExecutor: &eventProcessorExecutor[T, V]{

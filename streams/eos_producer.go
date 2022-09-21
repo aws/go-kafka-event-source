@@ -247,6 +247,7 @@ type producerNode[T any] struct {
 	produceLock      sync.Mutex
 	firstEvent       time.Time
 	id               int
+	eosErrorHandler  EosErrorHandler
 	// errs                  []error
 }
 
@@ -268,6 +269,7 @@ func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitL
 		shouldMarkCommit: source.shouldMarkCommit(),
 		currentParitions: make(map[int32]eventContextDll[T]),
 		partitionOwners:  partitionOwners,
+		eosErrorHandler:  source.eosErrorHandler(),
 	}
 }
 
