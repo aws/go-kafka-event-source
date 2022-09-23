@@ -16,7 +16,6 @@ package streams
 
 import (
 	"bytes"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -42,19 +41,20 @@ func recordSize(r kgo.Record) int {
 	return byteCount
 }
 
-var reusableRecordPool = sync.Pool{
-	New: func() any {
-		return &Record{
-			kRecord: kgo.Record{
-				Partition: AutoAssign,
-				Key:       nil,
-				Value:     nil,
-			},
-			keyBuffer:   bytes.NewBuffer(nil),
-			valueBuffer: bytes.NewBuffer(nil),
-		}
-	},
-}
+// var reusableRecordPool = sync.Pool{
+// 	New: func() any {
+// 		atomic.AddInt64(&recordPoolSize, 1)
+// 		return &Record{
+// 			kRecord: kgo.Record{
+// 				Partition: AutoAssign,
+// 				Key:       nil,
+// 				Value:     nil,
+// 			},
+// 			keyBuffer:   bytes.NewBuffer(nil),
+// 			valueBuffer: bytes.NewBuffer(nil),
+// 		}
+// 	},
+// }
 
 type Record struct {
 	keyBuffer   *bytes.Buffer
@@ -63,8 +63,20 @@ type Record struct {
 	recordType  string
 }
 
+var recordFreeList = sak.NewFreeList(40000, func() *Record {
+	return &Record{
+		kRecord: kgo.Record{
+			Partition: AutoAssign,
+			Key:       nil,
+			Value:     nil,
+		},
+		keyBuffer:   bytes.NewBuffer(nil),
+		valueBuffer: bytes.NewBuffer(nil),
+	}
+})
+
 func NewRecord() *Record {
-	return reusableRecordPool.Get().(*Record)
+	return recordFreeList.Make()
 }
 
 type IncomingRecord struct {
@@ -247,7 +259,7 @@ func (r *Record) Release() {
 	r.keyBuffer.Reset()
 	r.valueBuffer.Reset()
 	r.recordType = ""
-	reusableRecordPool.Put(r)
+	recordFreeList.Free(r)
 }
 
 type ChangeLogEntry struct {

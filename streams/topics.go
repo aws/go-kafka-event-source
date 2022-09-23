@@ -271,42 +271,6 @@ func resolveOrCreateTopics(source *Source, sourceTopicAdminClient, eosAdminClien
 	return source, nil
 }
 
-// func resolveTopicMetadata(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
-// 	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), source.config.Topic)
-// 	if err != nil {
-// 		return source, err
-// 	}
-// 	if len(res) != 1 {
-// 		return source, missingTopicError
-// 	}
-// 	source.config.NumPartitions = len(res[source.config.Topic].Partitions.Numbers())
-// 	source.config.ReplicationFactor = res[source.config.Topic].Partitions.NumReplicas()
-
-// 	commitLogName := source.CommitLogTopicNameForGroupId()
-// 	changLogName := source.ChangeLogTopicName()
-// 	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), commitLogName, changLogName)
-// 	if err != nil {
-// 		return source, err
-// 	}
-// 	if topicDetail, ok := res[commitLogName]; ok {
-// 		source.config.CommitLogPartitions = len(topicDetail.Partitions.Numbers())
-// 	} else {
-// 		return source, missingTopicError
-// 	}
-
-// 	if topicDetail, ok := res[changLogName]; ok {
-// 		changeLogPartitionCount := len(topicDetail.Partitions.Numbers())
-// 		if changeLogPartitionCount != source.config.NumPartitions {
-// 			return source, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
-// 				changeLogPartitionCount, source.config.NumPartitions)
-// 		}
-// 	} else {
-// 		return source, missingTopicError
-// 	}
-
-// 	return source, nil
-// }
-
 // Deletes all topics associated with a Source. Provided for local testing purpoose only.
 // Do not call this in deployed applications unless your topics are transient in nature.
 func DeleteSource(sourceConfig EventSourceConfig) error {
