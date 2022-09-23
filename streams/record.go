@@ -32,6 +32,16 @@ const RecordTypeHeaderKey = "__grt__" // let's keep it small. every byte counts
 
 const AutoAssign = int32(-1)
 
+func recordSize(r kgo.Record) int {
+	byteCount := len(r.Key)
+	byteCount += len(r.Value)
+	for _, h := range r.Headers {
+		byteCount += len(h.Key)
+		byteCount += len(h.Value)
+	}
+	return byteCount
+}
+
 var reusableRecordPool = sync.Pool{
 	New: func() any {
 		return &Record{

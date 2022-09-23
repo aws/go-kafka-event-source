@@ -75,9 +75,6 @@ func (es *EventSource[T]) ConsumeEvents() {
 
 func (es *EventSource[T]) EmitMetric(m Metric) {
 	if es.metrics != nil {
-		if m.ExecuteMicro == 0 {
-			m.ExecuteMicro = m.StartMicro
-		}
 		select {
 		case es.metrics <- m:
 		default:
@@ -94,6 +91,9 @@ func (es *EventSource[T]) emitMetrics() {
 	for {
 		select {
 		case m := <-es.metrics:
+			if m.ExecuteTime.IsZero() {
+				m.ExecuteTime = m.StartTime
+			}
 			handler(m)
 		case <-es.runStatus.Done():
 			close(es.metrics)

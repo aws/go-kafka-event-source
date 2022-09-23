@@ -93,7 +93,13 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	client, err := NewClient(
 		source.config.SourceCluster, opts...)
 
-	sc.producerPool = newEOSProducerPool[T](source, cl, source.config.EosConfig, client, eventSource.metrics)
+	eosConfig := source.config.EosConfig
+	if eosConfig.IsZero() {
+		eosConfig = DefaultEosConfig
+		source.config.EosConfig = eosConfig
+	}
+	eosConfig.validate()
+	sc.producerPool = newEOSProducerPool[T](source, cl, eosConfig, client, eventSource.metrics)
 
 	for _, gb := range groupBalancers {
 		if igr, ok := gb.(IncrementalGroupRebalancer); ok {
@@ -147,9 +153,22 @@ func (sc *eventSourceConsumer[T]) PrepareTopicPartition(tp TopicPartition) {
 			ssp.sync()
 			processed := ssp.processed()
 			duration := time.Since(start)
-			log.Infof("Prepped %+v, %d messages in %v (tps: %d)",
+
+			log.Debugf("Prepped %+v, %d messages in %v (tps: %d)",
 				tp, processed, duration, int(float64(processed)/duration.Seconds()))
 			sc.incrBalancer.PartitionPrepared(tp)
+			if sc.metrics != nil {
+				sc.metrics <- Metric{
+					Operation:      PartitionPreppedOperation,
+					StartTime:      start,
+					EndTime:        time.Now(),
+					PartitionCount: 1,
+					Partition:      partition,
+					Count:          int(processed),
+					Bytes:          int(ssp.processedBytes()),
+					GroupId:        sc.source.GroupId(),
+				}
+			}
 		}()
 	}
 }

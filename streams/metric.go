@@ -17,12 +17,13 @@ package streams
 import "time"
 
 const TxnCommitOperation = "TxnCommit"
+const PartitionPreppedOperation = "PartitionPrepped"
 
 type MetricsHandler func(Metric)
 type Metric struct {
-	StartMicro     int64
-	ExecuteMicro   int64
-	EndMicro       int64
+	StartTime      time.Time
+	ExecuteTime    time.Time
+	EndTime        time.Time
 	Count          int
 	Bytes          int
 	PartitionCount int
@@ -33,13 +34,13 @@ type Metric struct {
 }
 
 func (m Metric) Duration() time.Duration {
-	return time.Duration(m.EndMicro-m.StartMicro) * time.Microsecond
+	return m.EndTime.Sub(m.StartTime)
 }
 
 func (m Metric) Linger() time.Duration {
-	return time.Duration(m.ExecuteMicro-m.StartMicro) * time.Microsecond
+	return m.ExecuteTime.Sub(m.StartTime)
 }
 
 func (m Metric) ExecuteDuration() time.Duration {
-	return time.Duration(m.EndMicro-m.ExecuteMicro) * time.Microsecond
+	return m.EndTime.Sub(m.ExecuteTime)
 }

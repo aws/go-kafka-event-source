@@ -82,10 +82,6 @@ type eosProducerPool[T StateStore] struct {
 }
 
 func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client, metrics chan Metric) *eosProducerPool[T] {
-	if cfg.IsZero() {
-		cfg = DefaultEosConfig
-	}
-	cfg.validate()
 	pp := &eosProducerPool[T]{
 		cfg:               DefaultEosConfig,
 		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
@@ -98,11 +94,22 @@ func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, c
 		},
 		flushTimer: time.NewTicker(noPendingDuration),
 	}
+	var first *producerNode[T]
+	var prev *producerNode[T]
+	var last *producerNode[T]
 	for i := 0; i < cfg.PoolSize; i++ {
 		p := newProducerNode(i, source, commitLog, pp.partitionOwners, commitClient, metrics)
 		pp.producerNodes = append(pp.producerNodes, p)
+		if first == nil {
+			first = p
+		} else {
+			prev.next = p
+		}
+		last = p
+		prev = p
 		pp.producerNodeQueue <- p
 	}
+	last.next = first
 	pp.onDeck = <-pp.producerNodeQueue
 	go pp.forwardExecutionContexts()
 	go pp.commitLoop()
@@ -237,6 +244,7 @@ type producerNode[T any] struct {
 	client           *kgo.Client
 	commitClient     *kgo.Client
 	commitLog        *eosCommitLog
+	next             *producerNode[T]
 	metrics          chan Metric
 	source           *Source
 	recordsToProduce []recordAndEventContext[T]
@@ -339,12 +347,14 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 	return startTxn
 }
 
-func (p *producerNode[T]) setProducerFor(partition int32) {
+func (p *producerNode[T]) setProducerFor(partition int32) bool {
 	if dll, ok := p.currentParitions[partition]; ok {
 		for ec := dll.root; ec != nil; ec = ec.next {
 			ec.setProducer(p)
 		}
+		return true
 	}
+	return false
 }
 
 func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
@@ -422,12 +432,7 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 	p.eventContextCnt = 0
 	var empty recordAndEventContext[T]
 	for i, rtp := range p.recordsToProduce {
-		byteCount += len(rtp.record.kRecord.Key)
-		byteCount += len(rtp.record.kRecord.Value)
-		for _, h := range rtp.record.kRecord.Headers {
-			byteCount += len(h.Key)
-			byteCount += len(h.Value)
-		}
+		byteCount += recordSize(rtp.record.kRecord)
 		rtp.record.Release()
 		rtp.eventContext.producer = nil
 		rtp.eventContext.prev = nil
@@ -440,9 +445,9 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 			Operation:      TxnCommitOperation,
 			Topic:          p.source.Topic(),
 			GroupId:        p.source.GroupId(),
-			StartMicro:     p.firstEvent.UnixMicro(),
-			ExecuteMicro:   executionTime.UnixMicro(),
-			EndMicro:       time.Now().UnixMicro(),
+			StartTime:      p.firstEvent,
+			ExecuteTime:    executionTime,
+			EndTime:        time.Now(),
 			Count:          len(p.recordsToProduce),
 			Bytes:          byteCount,
 			PartitionCount: len(p.currentParitions),
@@ -450,11 +455,52 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 		}
 	}
 
+	p.relinquishOwnership()
+	p.recordsToProduce = p.recordsToProduce[0:0]
+}
+
+/*
+relinquishOwnership is needed to maintain produce ordering. If we have more than 2 producerNodes, we can not simply relinquich control
+of partitions as the onDeck producerNode may take ownership while the pending produceNode may have events for the same partition.
+In this case, the ondeck producerNode would get priority over the pending, which would break event ordering.
+Since we round robin through producerNodes, we can iterate through them in order and check to see if the producerNode
+has any events for the partition in question.
+If so, transfer ownership immediately which will open up production for pending events.
+While this does create lock contention, it allows us to produce concurrently accross nodes. It also allows us to start producing records *before*
+we bgin the commit process.
+*/
+func (p *producerNode[T]) relinquishOwnership() {
+	// we must first make sure that no new partitions are added to producerNodes while we are doing out calculation
+	p.rlockSiblings()
 	for tp := range p.currentParitions {
-		p.partitionOwners.clear(tp)
+		wasTranfered := false
+		for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
+			if _, ok := nextNode.currentParitions[tp]; ok {
+				p.partitionOwners.set(tp, nextNode)
+				nextNode.setProducerFor(tp)
+				wasTranfered = true
+				break
+			}
+		}
+		if !wasTranfered {
+			p.partitionOwners.clear(tp)
+		}
 		delete(p.currentParitions, tp)
 	}
-	p.recordsToProduce = p.recordsToProduce[0:0]
+	// be sure to unlock
+	p.runlockSiblings()
+}
+
+func (p *producerNode[T]) rlockSiblings() {
+	for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
+		nextNode.partitionLock.RLock()
+	}
+}
+
+func (p *producerNode[T]) runlockSiblings() {
+	for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
+		nextNode.partitionLock.RUnlock()
+	}
 }
 
 func (p *producerNode[T]) clearRevokedState() {

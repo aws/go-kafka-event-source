@@ -33,6 +33,8 @@ type TopicPartition struct {
 	Topic     string
 }
 
+// var missingTopicError = errors.New("topic does not exist")
+
 // ntp == 'New Topic Partition'. Essentially a macro for TopicPartition{Parition: p, Topic: t} which is quite verbose
 func ntp(p int32, t string) TopicPartition {
 	return TopicPartition{Partition: p, Topic: t}
@@ -172,17 +174,17 @@ func createSource(source *Source) (*Source, error) {
 
 	sourceTopicAdminClient := kadm.NewClient(sourceTopicClient)
 	eosAdminClient := kadm.NewClient(eosClient)
+	source, err = resolveOrCreateTopics(source, sourceTopicAdminClient, eosAdminClient)
+	// createTopic(sourceTopicAdminClient, source.NumPartitions(),
+	// 	replicationFactorConfig(source), minInSyncConfig(source), DeleteCleanupPolicy, 1, source.Topic())
 
-	createTopic(sourceTopicAdminClient, source.NumPartitions(),
-		replicationFactorConfig(source), minInSyncConfig(source), DeleteCleanupPolicy, 1, source.Topic())
+	// createTopic(eosAdminClient, commitLogPartitionsConfig(source),
+	// 	replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.9, source.CommitLogTopicNameForGroupId())
 
-	createTopic(eosAdminClient, commitLogPartitionsConfig(source),
-		replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.9, source.CommitLogTopicNameForGroupId())
+	// createTopic(eosAdminClient, source.NumPartitions(),
+	// 	replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, source.ChangeLogTopicName())
 
-	createTopic(eosAdminClient, source.NumPartitions(),
-		replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, source.ChangeLogTopicName())
-
-	source, err = resolveTopicMetadata(source, sourceTopicAdminClient, eosAdminClient)
+	// source, err = resolveTopicMetadata(source, sourceTopicAdminClient, eosAdminClient)
 	sourceTopicClient.Close()
 	eosClient.Close()
 	return source, err
@@ -196,6 +198,8 @@ func isNetworkError(err error) bool {
 	if errors.As(err, &opError) {
 		log.Warnf("network error for operation: %s, error: %v", opError.Op, opError)
 		return true
+	} else if err != nil {
+		log.Errorf("non network error for operation: %s, error: %v", opError.Op, opError)
 	}
 	return false
 }
@@ -217,42 +221,91 @@ func CreateSource(sourceConfig EventSourceConfig) (resolved *Source, err error) 
 	return
 }
 
-func resolveTopicMetadata(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
-
-	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), source.config.Topic)
-	if err != nil {
-		return source, err
-	}
-	if len(res) != 1 {
-		return source, fmt.Errorf("source topic does not exist")
-	}
-	source.config.NumPartitions = len(res[source.config.Topic].Partitions.Numbers())
-	source.config.ReplicationFactor = res[source.config.Topic].Partitions.NumReplicas()
-
+func resolveOrCreateTopics(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
+	topic := source.Topic()
 	commitLogName := source.CommitLogTopicNameForGroupId()
 	changLogName := source.ChangeLogTopicName()
-	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), commitLogName, changLogName)
+	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), topic)
 	if err != nil {
-		return source, err
+		return nil, err
 	}
-	if topicDetail, ok := res[commitLogName]; ok {
-		source.config.CommitLogPartitions = len(topicDetail.Partitions.Numbers())
+	if val, ok := res[topic]; ok && val.Err == nil {
+		source.config.NumPartitions = len(val.Partitions.Numbers())
+		source.config.ReplicationFactor = val.Partitions.NumReplicas()
 	} else {
-		return source, fmt.Errorf("commit log topic does not exist")
+		err = createTopic(sourceTopicAdminClient, source.NumPartitions(),
+			replicationFactorConfig(source), minInSyncConfig(source), DeleteCleanupPolicy, 1, topic)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	if topicDetail, ok := res[changLogName]; ok {
-		changeLogPartitionCount := len(topicDetail.Partitions.Numbers())
+	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), commitLogName, changLogName)
+	if err != nil {
+		return nil, err
+	}
+	if val, ok := res[commitLogName]; ok && val.Err == nil {
+		source.config.CommitLogPartitions = len(val.Partitions.Numbers())
+	} else {
+		err = createTopic(eosAdminClient, commitLogPartitionsConfig(source),
+			replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.9, commitLogName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if val, ok := res[changLogName]; ok && val.Err == nil {
+		changeLogPartitionCount := len(val.Partitions.Numbers())
 		if changeLogPartitionCount != source.config.NumPartitions {
-			return source, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
+			return nil, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
 				changeLogPartitionCount, source.config.NumPartitions)
 		}
 	} else {
-		return source, fmt.Errorf("change log topic does not exist")
+		err = createTopic(eosAdminClient, source.NumPartitions(),
+			replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, changLogName)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return source, nil
 }
+
+// func resolveTopicMetadata(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
+// 	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), source.config.Topic)
+// 	if err != nil {
+// 		return source, err
+// 	}
+// 	if len(res) != 1 {
+// 		return source, missingTopicError
+// 	}
+// 	source.config.NumPartitions = len(res[source.config.Topic].Partitions.Numbers())
+// 	source.config.ReplicationFactor = res[source.config.Topic].Partitions.NumReplicas()
+
+// 	commitLogName := source.CommitLogTopicNameForGroupId()
+// 	changLogName := source.ChangeLogTopicName()
+// 	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), commitLogName, changLogName)
+// 	if err != nil {
+// 		return source, err
+// 	}
+// 	if topicDetail, ok := res[commitLogName]; ok {
+// 		source.config.CommitLogPartitions = len(topicDetail.Partitions.Numbers())
+// 	} else {
+// 		return source, missingTopicError
+// 	}
+
+// 	if topicDetail, ok := res[changLogName]; ok {
+// 		changeLogPartitionCount := len(topicDetail.Partitions.Numbers())
+// 		if changeLogPartitionCount != source.config.NumPartitions {
+// 			return source, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
+// 				changeLogPartitionCount, source.config.NumPartitions)
+// 		}
+// 	} else {
+// 		return source, missingTopicError
+// 	}
+
+// 	return source, nil
+// }
 
 // Deletes all topics associated with a Source. Provided for local testing purpoose only.
 // Do not call this in deployed applications unless your topics are transient in nature.

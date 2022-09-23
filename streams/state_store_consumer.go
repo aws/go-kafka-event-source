@@ -53,6 +53,7 @@ type stateStorePartition[T StateStore] struct {
 	topicPartition TopicPartition
 	state          partitionState
 	count          uint64
+	byteCount      uint64
 	waiterLock     sync.Mutex
 	highWatermark  int64
 }
@@ -113,6 +114,10 @@ func (ssp *stateStorePartition[T]) processed() uint64 {
 	return atomic.LoadUint64(&ssp.count)
 }
 
+func (ssp *stateStorePartition[T]) processedBytes() uint64 {
+	return atomic.LoadUint64(&ssp.byteCount)
+}
+
 func (ssp *stateStorePartition[T]) partitionState() partitionState {
 	return partitionState(atomic.LoadUint32((*uint32)(&ssp.state)))
 }
@@ -124,6 +129,7 @@ func (ssp *stateStorePartition[T]) setState(state partitionState) {
 func (ssp *stateStorePartition[T]) prep(intitialState partitionState, store changeLogPartition[T]) {
 	ssp.setState(intitialState)
 	ssp.count = 0
+	ssp.byteCount = 0
 	ssp.buffer = make(chan []*kgo.Record, 1024)
 	topic := ssp.topicPartition.Topic
 	partition := ssp.topicPartition.Partition
@@ -178,6 +184,7 @@ func (ssp *stateStorePartition[T]) handleRecordsAndContinue(records []*kgo.Recor
 			// 		record.Topic, record.Partition, record.Offset, err)
 			// }
 			atomic.AddUint64(&ssp.count, 1)
+			atomic.AddUint64(&ssp.byteCount, uint64(recordSize(*record)))
 		}
 	}
 	return true

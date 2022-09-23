@@ -40,8 +40,8 @@ const (
 
 type partitionWorker[T StateStore] struct {
 	eosProducer         *eosProducerPool[T]
-	input               chan []*kgo.Record
-	eventInput          chan *kgo.Record
+	partitionInput      chan []*kgo.Record
+	recordInput         chan *kgo.Record
 	asyncCompleter      asyncCompleter[T]
 	interjectionChannel chan *interjection[T]
 	stopSignal          chan struct{}
@@ -66,6 +66,10 @@ func newPartitionWorker[T StateStore](
 	eosProducer *eosProducerPool[T],
 	waiter func()) *partitionWorker[T] {
 
+	eosConfig := eventSource.source.config.EosConfig
+
+	recordsInputSize := sak.Max(eosConfig.MaxBatchSize/10, 100)
+	asyncSize := recordsInputSize * 4
 	pw := &partitionWorker[T]{
 		eventSource:    eventSource,
 		topicPartition: topicPartition,
@@ -75,11 +79,11 @@ func newPartitionWorker[T StateStore](
 		revokedSignal:  make(chan struct{}),
 		stopped:        make(chan struct{}),
 		asyncCompleter: asyncCompleter[T]{
-			asyncJobs:      make(chan asyncJob[T], 8192),
+			asyncJobs:      make(chan asyncJob[T], asyncSize),
 			asyncFullReply: make(chan struct{}, 1),
 		},
-		input:               make(chan []*kgo.Record, 256),
-		eventInput:          make(chan *kgo.Record, 4096),
+		partitionInput:      make(chan []*kgo.Record, 1),
+		recordInput:         make(chan *kgo.Record, recordsInputSize),
 		interjectionChannel: make(chan *interjection[T], 1),
 		runStatus:           eventSource.runStatus.Fork(),
 		highestOffset:       -1,
@@ -95,7 +99,7 @@ func (pw *partitionWorker[T]) add(records []*kgo.Record) {
 		return
 	}
 	atomic.AddInt64(&pw.pending, int64(len(records)))
-	pw.input <- records
+	pw.partitionInput <- records
 }
 
 func (pw *partitionWorker[T]) revoke() {
@@ -113,18 +117,18 @@ func (s sincer) String() string {
 func (pw *partitionWorker[T]) pushRecords() {
 	for {
 		select {
-		case records := <-pw.input:
+		case records := <-pw.partitionInput:
 			if !pw.isRevoked() {
 				for _, record := range records {
-					pw.eventInput <- record
+					pw.recordInput <- record
 				}
 			}
 		case <-pw.runStatus.Done():
 			log.Debugf("Closing worker for %+v", pw.topicPartition)
 			pw.stopSignal <- struct{}{}
 			<-pw.stopped
-			close(pw.input)
-			close(pw.eventInput)
+			close(pw.partitionInput)
+			close(pw.recordInput)
 			close(pw.asyncCompleter.asyncJobs)
 			log.Debugf("Closed worker for %+v", pw.topicPartition)
 			return
@@ -137,9 +141,9 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	// don't start consuming until this function returns
 	// this function will block until all changelogs for this partition are populated
 	pw.highestOffset = commitLog.lastProcessed(pw.topicPartition)
-	log.Infof("partitionWorker initialized %+v with lastProcessed offset: %d in %v", pw.topicPartition, pw.highestOffset, elapsed)
+	log.Debugf("partitionWorker initialized %+v with lastProcessed offset: %d in %v", pw.topicPartition, pw.highestOffset, elapsed)
 	waiter()
-	log.Infof("partitionWorker activated %+v in %v, interjectionCount: %d", pw.topicPartition, elapsed, len(interjections))
+	log.Debugf("partitionWorker activated %+v in %v, interjectionCount: %d", pw.topicPartition, elapsed, len(interjections))
 	ijPtrs := sak.ToPtrSlice(interjections)
 	for _, ij := range ijPtrs {
 		ij.init(pw.topicPartition, pw.interjectionChannel)
@@ -148,7 +152,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	pw.eventSource.source.onPartitionActivated(pw.topicPartition.Partition)
 	for {
 		select {
-		case record := <-pw.eventInput:
+		case record := <-pw.recordInput:
 			if record != nil {
 				ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
 				pw.handleEvent(ec)
