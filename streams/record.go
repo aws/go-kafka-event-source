@@ -41,21 +41,6 @@ func recordSize(r kgo.Record) int {
 	return byteCount
 }
 
-// var reusableRecordPool = sync.Pool{
-// 	New: func() any {
-// 		atomic.AddInt64(&recordPoolSize, 1)
-// 		return &Record{
-// 			kRecord: kgo.Record{
-// 				Partition: AutoAssign,
-// 				Key:       nil,
-// 				Value:     nil,
-// 			},
-// 			keyBuffer:   bytes.NewBuffer(nil),
-// 			valueBuffer: bytes.NewBuffer(nil),
-// 		}
-// 	},
-// }
-
 type Record struct {
 	keyBuffer   *bytes.Buffer
 	valueBuffer *bytes.Buffer
@@ -63,7 +48,7 @@ type Record struct {
 	recordType  string
 }
 
-var recordFreeList = sak.NewFreeList(40000, func() *Record {
+var recordFreeList = sak.NewFreeList(30000, func() *Record {
 	return &Record{
 		kRecord: kgo.Record{
 			Partition: AutoAssign,

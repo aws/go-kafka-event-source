@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -167,14 +168,19 @@ func (ec *EventContext[T]) complete() {
 	ec.wg.Done()
 }
 
-var pendingRecordPool = sync.Pool{
-	New: func() any {
-		return new(pendingRecords)
-	},
-}
+var pendingRecordFreeList = sak.NewFreeList(10000, func() *pendingRecords {
+	return new(pendingRecords)
+})
+
+// var pendingRecordPool = sync.Pool{
+// 	New: func() any {
+// 		return new(pendingRecords)
+// 	},
+// }
 
 func borrowPendingRecords() *pendingRecords {
-	return pendingRecordPool.Get().(*pendingRecords)
+	// return pendingRecordPool.Get().(*pendingRecords)
+	return pendingRecordFreeList.Make()
 }
 
 func releasePendingRecords(pending *pendingRecords) {
@@ -182,7 +188,8 @@ func releasePendingRecords(pending *pendingRecords) {
 		pending.records[i] = nil
 	}
 	pending.records = pending.records[0:0]
-	pendingRecordPool.Put(pending)
+	pendingRecordFreeList.Free(pending)
+	// pendingRecordPool.Put(pending)
 }
 
 func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {

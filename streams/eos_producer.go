@@ -69,14 +69,11 @@ type eosProducerPool[T StateStore] struct {
 	producerNodeQueue chan *producerNode[T]
 	onDeck            *producerNode[T]
 	commitQueue       chan *producerNode[T]
-	signal            chan struct{}
+	buffer            chan *EventContext[T]
 	cfg               EosConfig
 	producerNodes     []*producerNode[T]
 	flushTimer        *time.Ticker
-	root              *EventContext[T]
-	tail              *EventContext[T]
 	partitionOwners   partitionOwners[T]
-	sllLock           sync.Mutex // lock for out singly linked list of EventContexts
 	startTime         time.Time
 	// cluster           Cluster
 }
@@ -86,7 +83,7 @@ func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, c
 		cfg:               DefaultEosConfig,
 		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
 		commitQueue:       make(chan *producerNode[T], cfg.PendingTxnCount),
-		signal:            make(chan struct{}, 1),
+		buffer:            make(chan *EventContext[T], 1024),
 		producerNodes:     make([]*producerNode[T], 0, cfg.PoolSize),
 		partitionOwners: partitionOwners[T]{
 			owners: make(map[int32]*producerNode[T]),
@@ -126,66 +123,41 @@ func (pp *eosProducerPool[T]) revokePartition(tp TopicPartition) {
 
 // buffer the event context until a producer node is available
 func (pp *eosProducerPool[T]) addEventContext(ec *EventContext[T]) {
-	pp.sllLock.Lock()
-	if pp.root == nil {
-		pp.root, pp.tail = ec, ec
-	} else {
-		pp.tail.next = ec
-		pp.tail = ec
-	}
-	pp.sllLock.Unlock()
-	select {
-	case pp.signal <- struct{}{}:
-	default:
-	}
+	pp.buffer <- ec
 }
 
-func (pp *eosProducerPool[T]) doForwardExecutionContexts() {
-	for {
-		pp.sllLock.Lock()
-		ec := pp.root
-		if ec == nil {
-			pp.sllLock.Unlock()
-			return
-		}
-		pp.root = ec.next
-		ec.next = nil
-		pp.sllLock.Unlock()
+func (pp *eosProducerPool[T]) doForwardExecutionContexts(ec *EventContext[T]) {
+	if ec.isRevoked() {
+		// if we're revoked, don't even add this to the onDeck producer
+		return
+	}
 
-		if ec.isRevoked() {
-			// if we're revoked, don't even add this to the onDeck producer
-			return
-		}
-
-		txnStarted := pp.onDeck.addEventContext(ec)
-		if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.partition(), pp.onDeck); wasNil {
-			// this partition is not owned by the committing producer, so it is safe to start producing.
-			// update all of the event contexts for this partition only.
-			// once setProducer is called, any buffered records for this event will now be sent to the kafka broker.
-			pp.onDeck.setProducerFor(ec.partition())
-		} else if wasEqual {
-			// this was the correct producer, no need to update all and create an n^2 issue
-			ec.setProducer(pp.onDeck)
-		}
-		// off to the races
-		if pp.shouldTryFlush() {
-			pp.tryFlush()
-		} else if txnStarted {
-			pp.flushTimer.Reset(pp.cfg.BatchDelay)
-		}
-
+	txnStarted := pp.onDeck.addEventContext(ec)
+	if wasNil, wasEqual := pp.partitionOwners.conditionallyUpdate(ec.partition(), pp.onDeck); wasNil {
+		// this partition is not owned by the committing producer, so it is safe to start producing.
+		// update all of the event contexts for this partition only.
+		// once setProducer is called, any buffered records for this event will now be sent to the kafka broker.
+		pp.onDeck.setProducerFor(ec.partition())
+	} else if wasEqual {
+		// this was the correct producer, no need to update all and create an n^2 issue
+		ec.setProducer(pp.onDeck)
+	}
+	// off to the races
+	if pp.shouldTryFlush() {
+		pp.tryFlush()
+	} else if txnStarted {
+		pp.flushTimer.Reset(pp.cfg.BatchDelay)
 	}
 }
 
 func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 	for {
 		select {
-		case <-pp.signal:
-			pp.doForwardExecutionContexts()
+		case ec := <-pp.buffer:
+			pp.doForwardExecutionContexts(ec)
 		case <-pp.flushTimer.C:
 			pp.tryFlush()
 		}
-
 	}
 }
 
@@ -338,12 +310,12 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 	}
 
 	p.eventContextCnt++
-	p.partitionLock.Unlock()
 	if startTxn {
 		if err := p.client.BeginTransaction(); err != nil {
 			log.Errorf("txn err: %v", err)
 		}
 	}
+	p.partitionLock.Unlock()
 	return startTxn
 }
 
@@ -440,6 +412,8 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 		p.recordsToProduce[i] = empty
 	}
 
+	partitionCount := len(p.currentParitions)
+	p.relinquishOwnership()
 	if p.metrics != nil && len(p.recordsToProduce) > 0 {
 		p.metrics <- Metric{
 			Operation:      TxnCommitOperation,
@@ -450,12 +424,10 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 			EndTime:        time.Now(),
 			Count:          len(p.recordsToProduce),
 			Bytes:          byteCount,
-			PartitionCount: len(p.currentParitions),
+			PartitionCount: partitionCount,
 			Partition:      -1,
 		}
 	}
-
-	p.relinquishOwnership()
 	p.recordsToProduce = p.recordsToProduce[0:0]
 }
 
@@ -470,36 +442,23 @@ While this does create lock contention, it allows us to produce concurrently acc
 we bgin the commit process.
 */
 func (p *producerNode[T]) relinquishOwnership() {
-	// we must first make sure that no new partitions are added to producerNodes while we are doing out calculation
-	p.rlockSiblings()
 	for tp := range p.currentParitions {
 		wasTranfered := false
 		for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
+			nextNode.partitionLock.RLock()
 			if _, ok := nextNode.currentParitions[tp]; ok {
 				p.partitionOwners.set(tp, nextNode)
 				nextNode.setProducerFor(tp)
+				nextNode.partitionLock.RUnlock()
 				wasTranfered = true
 				break
 			}
+			nextNode.partitionLock.RUnlock()
 		}
 		if !wasTranfered {
 			p.partitionOwners.clear(tp)
 		}
 		delete(p.currentParitions, tp)
-	}
-	// be sure to unlock
-	p.runlockSiblings()
-}
-
-func (p *producerNode[T]) rlockSiblings() {
-	for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
-		nextNode.partitionLock.RLock()
-	}
-}
-
-func (p *producerNode[T]) runlockSiblings() {
-	for nextNode := p.next; nextNode != p; nextNode = nextNode.next {
-		nextNode.partitionLock.RUnlock()
 	}
 }
 
