@@ -48,20 +48,35 @@ type Record struct {
 	recordType  string
 }
 
-var recordFreeList = sak.NewFreeList(30000, func() *Record {
-	return &Record{
-		kRecord: kgo.Record{
+var recordPool = sak.NewPool(30000,
+	func() *Record {
+		return &Record{
+			kRecord: kgo.Record{
+				Partition: AutoAssign,
+				Key:       nil,
+				Value:     nil,
+			},
+			keyBuffer:   bytes.NewBuffer(nil),
+			valueBuffer: bytes.NewBuffer(nil),
+		}
+	}, func(r *Record) *Record {
+		//reset the record data
+		r.kRecord = kgo.Record{
 			Partition: AutoAssign,
 			Key:       nil,
 			Value:     nil,
-		},
-		keyBuffer:   bytes.NewBuffer(nil),
-		valueBuffer: bytes.NewBuffer(nil),
-	}
-})
+		}
+		if len(r.kRecord.Headers) > 0 {
+			r.kRecord.Headers = r.kRecord.Headers[0:0]
+		}
+		r.keyBuffer.Reset()
+		r.valueBuffer.Reset()
+		r.recordType = ""
+		return r
+	})
 
 func NewRecord() *Record {
-	return recordFreeList.Make()
+	return recordPool.Borrow()
 }
 
 type IncomingRecord struct {
@@ -232,19 +247,7 @@ func SetRecordType(r *kgo.Record, recordType string) {
 }
 
 func (r *Record) Release() {
-	r.kRecord = kgo.Record{
-		Partition: AutoAssign,
-		Key:       nil,
-		Value:     nil,
-	}
-	if len(r.kRecord.Headers) > 0 {
-		r.kRecord.Headers = r.kRecord.Headers[0:0]
-	}
-	//reset the record data
-	r.keyBuffer.Reset()
-	r.valueBuffer.Reset()
-	r.recordType = ""
-	recordFreeList.Free(r)
+	recordPool.Release(r)
 }
 
 type ChangeLogEntry struct {
@@ -255,16 +258,20 @@ func NewChangeLogEntry() ChangeLogEntry {
 	return ChangeLogEntry{NewRecord()}
 }
 
+func (cle ChangeLogEntry) KeyWriter() *bytes.Buffer {
+	return cle.record.KeyWriter()
+}
+
+func (cle ChangeLogEntry) ValueWriter() *bytes.Buffer {
+	return cle.record.ValueWriter()
+}
+
 func (cle ChangeLogEntry) WriteKey(bs ...[]byte) {
 	cle.record.WriteKey(bs...)
 }
 
 func (cle ChangeLogEntry) WriteKeyString(ss ...string) {
 	cle.record.WriteKeyString(ss...)
-}
-
-func (cle ChangeLogEntry) KeyWriter() *bytes.Buffer {
-	return cle.record.KeyWriter()
 }
 
 func (cle ChangeLogEntry) WriteValue(bs ...[]byte) {
@@ -275,8 +282,19 @@ func (cle ChangeLogEntry) WriteValueString(ss ...string) {
 	cle.record.WriteValueString(ss...)
 }
 
-func (cle ChangeLogEntry) ValueWriter() *bytes.Buffer {
-	return cle.record.ValueWriter()
+func (cle ChangeLogEntry) WithKey(key ...[]byte) ChangeLogEntry {
+	cle.record.WriteKey(key...)
+	return cle
+}
+
+func (cle ChangeLogEntry) WithKeyString(key ...string) ChangeLogEntry {
+	cle.record.WriteKeyString(key...)
+	return cle
+}
+
+func (cle ChangeLogEntry) WithValue(value ...[]byte) ChangeLogEntry {
+	cle.record.WriteValue(value...)
+	return cle
 }
 
 func (cle ChangeLogEntry) WithEntryType(entryType string) ChangeLogEntry {
@@ -317,4 +335,13 @@ func (otp optionalTopicPartitioner) Partition(r *kgo.Record, n int) int {
 		return otp.keyTopicPartitioner.Partition(r, n)
 	}
 	return otp.manualTopicPartitioner.Partition(r, n)
+}
+
+func CreateJsonChangeLogEntry[T any](item T) (ChangeLogEntry, error) {
+	return CreateChangeLogEntry[T](item, JsonCodec[T]{})
+}
+
+func CreateChangeLogEntry[T any](item T, codec Codec[T]) (ChangeLogEntry, error) {
+	cle := NewChangeLogEntry()
+	return cle, codec.Encode(cle.ValueWriter(), item)
 }

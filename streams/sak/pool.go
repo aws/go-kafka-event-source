@@ -16,39 +16,44 @@ package sak
 
 import "sync"
 
-type FreeList[T any] struct {
+type Pool[T any] struct {
 	mu       sync.Mutex
 	freelist []T
 	factory  func() T
+	reset    func(T) T
 }
 
-// NewFreeList creates a new free list.
+// NewPool creates a new free list.
 // size is the maximum size of the returned free list.
-func NewFreeList[T any](size int, factory func() T) *FreeList[T] {
-	return &FreeList[T]{freelist: make([]T, 0, size), factory: factory}
+func NewPool[T any](size int, factory func() T, resetter func(T) T) *Pool[T] {
+	if resetter == nil {
+		resetter = func(v T) T { return v }
+	}
+	return &Pool[T]{freelist: make([]T, 0, size), factory: factory, reset: resetter}
 }
 
-func (f *FreeList[T]) Make() (n T) {
-	f.mu.Lock()
-	index := len(f.freelist) - 1
+func (p *Pool[T]) Borrow() (n T) {
+	p.mu.Lock()
+	index := len(p.freelist) - 1
 	if index < 0 {
-		f.mu.Unlock()
-		return f.factory()
+		p.mu.Unlock()
+		return p.factory()
 	}
 	var empty T
-	n = f.freelist[index]
-	f.freelist[index] = empty
-	f.freelist = f.freelist[:index]
-	f.mu.Unlock()
+	n = p.freelist[index]
+	p.freelist[index] = empty
+	p.freelist = p.freelist[:index]
+	p.mu.Unlock()
 	return
 }
 
-func (f *FreeList[T]) Free(n T) (out bool) {
-	f.mu.Lock()
-	if len(f.freelist) < cap(f.freelist) {
-		f.freelist = append(f.freelist, n)
+func (p *Pool[T]) Release(n T) (out bool) {
+	p.reset(n)
+	p.mu.Lock()
+	if len(p.freelist) < cap(p.freelist) {
+		p.freelist = append(p.freelist, n)
 		out = true
 	}
-	f.mu.Unlock()
+	p.mu.Unlock()
 	return
 }

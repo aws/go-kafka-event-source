@@ -128,7 +128,7 @@ func (ec *EventContext[T]) flushPendingRecords() {
 	for _, record := range ec.pendingRecords.records {
 		ec.producer.produceRecord(ec, record)
 	}
-	releasePendingRecords(ec.pendingRecords)
+	pendingRecordPool.Release(ec.pendingRecords)
 	ec.pendingRecords = nil
 }
 
@@ -168,29 +168,17 @@ func (ec *EventContext[T]) complete() {
 	ec.wg.Done()
 }
 
-var pendingRecordFreeList = sak.NewFreeList(10000, func() *pendingRecords {
-	return new(pendingRecords)
-})
-
-// var pendingRecordPool = sync.Pool{
-// 	New: func() any {
-// 		return new(pendingRecords)
-// 	},
-// }
-
-func borrowPendingRecords() *pendingRecords {
-	// return pendingRecordPool.Get().(*pendingRecords)
-	return pendingRecordFreeList.Make()
-}
-
-func releasePendingRecords(pending *pendingRecords) {
-	for i := range pending.records {
-		pending.records[i] = nil
-	}
-	pending.records = pending.records[0:0]
-	pendingRecordFreeList.Free(pending)
-	// pendingRecordPool.Put(pending)
-}
+var pendingRecordPool = sak.NewPool(10000,
+	func() *pendingRecords {
+		return new(pendingRecords)
+	},
+	func(pending *pendingRecords) *pendingRecords {
+		for i := range pending.records {
+			pending.records[i] = nil
+		}
+		pending.records = pending.records[0:0]
+		return pending
+	})
 
 func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	input := newIncomingRecord(record)
@@ -201,7 +189,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 		input:          input,
 		isInterjection: false,
 		asynCompleter:  pw.asyncCompleter,
-		pendingRecords: borrowPendingRecords(),
+		pendingRecords: pendingRecordPool.Borrow(),
 	}
 	ec.wg.Add(1)
 	return ec
@@ -214,7 +202,7 @@ func newInterjectionContext[T StateStore](ctx context.Context, topicPartition To
 		isInterjection: true,
 		changeLog:      changeLog,
 		asynCompleter:  pw.asyncCompleter,
-		pendingRecords: borrowPendingRecords(),
+		pendingRecords: pendingRecordPool.Borrow(),
 	}
 	ec.wg.Add(1)
 	return ec

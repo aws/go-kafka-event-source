@@ -139,3 +139,12 @@ func Noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(unsafe.Pointer(p))
 	return unsafe.Pointer(x ^ 0)
 }
+
+// A convenience method for panicking on errors. Useful for simplifying code when calling methods that should never error,
+// or when thre is no way to recover from the error
+func Must[T any](item T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return item
+}

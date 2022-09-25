@@ -16,6 +16,7 @@ package stores
 
 import (
 	"github.com/aws/go-kafka-event-source/streams"
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/google/btree"
 )
 
@@ -34,22 +35,24 @@ func keyedLess[T Keyed](a, b *keyedValue[T]) bool {
 
 type SimpleStore[T Keyed] struct {
 	tree           *btree.BTreeG[*keyedValue[T]]
+	codec          streams.Codec[T]
 	topicPartition streams.TopicPartition
 }
 
-func NewSimpleStore[T Keyed](tp streams.TopicPartition) *SimpleStore[T] {
+func NewJsonSimpleStore[T Keyed](tp streams.TopicPartition) *SimpleStore[T] {
+	return NewSimpleStore[T](tp, streams.JsonCodec[T]{})
+}
+
+func NewSimpleStore[T Keyed](tp streams.TopicPartition, codec streams.Codec[T]) *SimpleStore[T] {
 	return &SimpleStore[T]{
 		tree:           btree.NewG(64, keyedLess[T]),
+		codec:          codec,
 		topicPartition: tp,
 	}
 }
 
 func (s *SimpleStore[T]) ToChangeLogEntry(item T) streams.ChangeLogEntry {
-	var codec streams.JsonCodec[T]
-	cle := streams.NewChangeLogEntry()
-	cle.WriteKeyString(item.Key())
-	codec.Encode(cle.ValueWriter(), item)
-	return cle
+	return sak.Must(streams.CreateChangeLogEntry(item, s.codec)).WithKeyString(item.Key())
 }
 
 func (s *SimpleStore[T]) Put(item T) streams.ChangeLogEntry {
@@ -73,8 +76,7 @@ func (s *SimpleStore[T]) Delete(item T) (cle streams.ChangeLogEntry, ok bool) {
 		key: string(item.Key()),
 	}
 	if _, ok = s.tree.Delete(&keyedValue); ok {
-		cle = streams.NewChangeLogEntry()
-		cle.WriteKeyString(keyedValue.key)
+		cle = streams.NewChangeLogEntry().WithKeyString(keyedValue.key)
 	}
 	return
 }
@@ -86,7 +88,7 @@ func (s *SimpleStore[T]) ReceiveChange(record streams.IncomingRecord) (err error
 			key: string(record.Key()),
 		}
 		s.tree.Delete(&keyedValue)
-	} else if item, err = streams.JsonItemDecoder[T](record); err != nil {
+	} else if item, err = s.codec.Decode(record.Value()); err != nil {
 		s.tree.ReplaceOrInsert(&keyedValue[T]{key: item.Key(), value: item})
 	}
 	return

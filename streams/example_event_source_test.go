@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/aws/go-kafka-event-source/streams"
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/aws/go-kafka-event-source/streams/stores"
 )
 
@@ -79,7 +80,7 @@ type ContactStore struct {
 }
 
 func NewContactStore(tp streams.TopicPartition) ContactStore {
-	return ContactStore{stores.NewSimpleStore[Contact](tp)}
+	return ContactStore{stores.NewJsonSimpleStore[Contact](tp)}
 }
 
 var notificationScheduler *streams.AsyncJobScheduler[ContactStore, string, EmailNotification]
@@ -133,10 +134,7 @@ func ExampleEventSource() {
 		DefaultTopic: sourceConfig.Topic,
 	}
 
-	eventSource, err := streams.NewEventSource(sourceConfig, NewContactStore, nil)
-	if err != nil {
-		panic(err)
-	}
+	eventSource := sak.Must(streams.NewEventSource(sourceConfig, NewContactStore, nil))
 
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], createContact, "CreateContact")
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], deleteContact, "DeleteContact")
@@ -195,19 +193,14 @@ func ExampleAsyncJobScheduler() {
 		DefaultTopic: sourceConfig.Topic,
 	}
 
-	eventSource, err := streams.NewEventSource(sourceConfig, NewContactStore, nil)
-	if err != nil {
-		panic(err)
-	}
+	eventSource := sak.Must(streams.NewEventSource(sourceConfig, NewContactStore, nil))
 
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[Contact], createContact, "CreateContact")
 	streams.RegisterEventType(eventSource, streams.JsonItemDecoder[NotifyContactEvent], notifyContactAsync, "NotifyContact")
 
-	notificationScheduler, err = streams.CreateAsyncJobScheduler(eventSource,
-		sendEmailToContact, emailToContactComplete, streams.DefaultConfig)
-	if err != nil {
-		panic(err)
-	}
+	notificationScheduler = sak.Must(streams.CreateAsyncJobScheduler(eventSource,
+		sendEmailToContact, emailToContactComplete, streams.DefaultConfig))
+
 	eventSource.ConsumeEvents()
 
 	contact := Contact{
