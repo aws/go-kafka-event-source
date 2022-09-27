@@ -51,13 +51,18 @@ func Min[T Number](a, b T) T {
 }
 
 // A generic version of math.Min with the added bonus of accepting more than 2 arguments.
-func MinN[T Number](min T, vals ...T) T {
-	for _, v := range vals {
+func MinN[T Number](vals ...T) (min T) {
+	if len(vals) == 0 {
+		return
+	}
+	min = vals[0]
+	for i := 1; i < len(vals); i++ {
+		v := vals[i]
 		if v < min {
 			min = v
 		}
 	}
-	return min
+	return
 }
 
 // A generic version of math.Max.
@@ -69,13 +74,18 @@ func Max[T Number](a, b T) T {
 }
 
 // A generic version of math.Max with the added bonus of accepting more than 2 arguments.
-func MaxN[T Number](max T, vals ...T) T {
-	for _, v := range vals {
+func MaxN[T Number](vals ...T) (max T) {
+	if len(vals) == 0 {
+		return
+	}
+	max = vals[0]
+	for i := 1; i < len(vals); i++ {
+		v := vals[i]
 		if v > max {
 			max = v
 		}
 	}
-	return max
+	return
 }
 
 // A utility function that converts a slice of T to a slice of *T.
@@ -141,7 +151,7 @@ func Noescape(p unsafe.Pointer) unsafe.Pointer {
 }
 
 // A convenience method for panicking on errors. Useful for simplifying code when calling methods that should never error,
-// or when thre is no way to recover from the error
+// or when thre is no way to recover from the error.
 func Must[T any](item T, err error) T {
 	if err != nil {
 		panic(err)

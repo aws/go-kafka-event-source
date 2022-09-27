@@ -16,6 +16,10 @@ package sak
 
 import "sync"
 
+// Pool is a generic alternative to sync.Pool, but more akin to "Free List". It does not function in the same way however.
+// It is simply a capped list of objects controlled by a mutex. In many situations, this will sak.Pool will outperform
+// sync.Pool, however the memory management is very rudimentary and does not provide the same benefits. There is however, much less
+// overhead than a standard sync.Pool.
 type Pool[T any] struct {
 	mu       sync.Mutex
 	freelist []T
@@ -24,7 +28,8 @@ type Pool[T any] struct {
 }
 
 // NewPool creates a new free list.
-// size is the maximum size of the returned free list.
+// size is the maximum size of the returned free list. `factory` is the function which allocates new objects when necessary.
+// `resetter` is optional, but when provided, is invoked on `Release`, before returning the object to the pool.
 func NewPool[T any](size int, factory func() T, resetter func(T) T) *Pool[T] {
 	if resetter == nil {
 		resetter = func(v T) T { return v }
@@ -32,6 +37,7 @@ func NewPool[T any](size int, factory func() T, resetter func(T) T) *Pool[T] {
 	return &Pool[T]{freelist: make([]T, 0, size), factory: factory, reset: resetter}
 }
 
+// Returns an item from the pool. If none are available, invokes `pool.factory` and return the result.
 func (p *Pool[T]) Borrow() (n T) {
 	p.mu.Lock()
 	index := len(p.freelist) - 1
@@ -47,8 +53,10 @@ func (p *Pool[T]) Borrow() (n T) {
 	return
 }
 
+// Returns an item to the pool if there is space available. If a `resetter` function is provided,
+// it is invoked regardless of wether the item is returned to the pool or not.
 func (p *Pool[T]) Release(n T) (out bool) {
-	p.reset(n)
+	n = p.reset(n)
 	p.mu.Lock()
 	if len(p.freelist) < cap(p.freelist) {
 		p.freelist = append(p.freelist, n)
