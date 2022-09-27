@@ -18,18 +18,19 @@ package streams
 type ErrorResponse int
 
 const (
-	// Instructs GKES to mark the event in error state as complete and continue processing as normal.
-	CompleteAndContinue ErrorResponse = iota
-	// Instructs GKES to immediately stop processing the partition in error. If using an IncermentalBalancer, this partition will go into a `Fail`
-	// mode and be reassigned to another consumer.
-	FailPartition
+	// Instructs GKES to ignore any error stateand continue processing as normal. If this is used in response to
+	// Kafka transaction error, there will likely be data loss or corruption. This ErrorResponse is not recommended as it is unlikely that
+	// a consumer will be able to recover gracefully from a transaction error. In almost all situations, FailConsumer is preferred.
+	Continue ErrorResponse = iota
 
-	// Instructs GKES to immediately stop processing the partition in error. Also instructs the consumer to leave the group.
-	// If using an IncermentalBalancer, the leave will be graceful. Tgis stratgey is recommnded for identifying bad deployments. The idea would be to capture
-	// this event via metrics and Alarm, causing a graceful rollback.
+	// Instructs GKES to immediately stop processing and the consumer to immediately leave the group.
+	// This is preferable to a FatallyExit as Kafka will immediatly recognize the consumer as exiting the group
+	// (if there is still comminication with the cluster) and processing of the
+	// failed partitions will begin without waiting for the session timeout value.
 	FailConsumer
 
-	// As the name implies, the application will fatally exit.
+	// As the name implies, the application will fatally exit. The partitions owned by this consumer will not be reassigned until the configured
+	// session timeout on the broker.
 	FatallyExit
 )
 
@@ -40,14 +41,14 @@ type ErrorContext interface {
 }
 
 type DeserializationErrorHandler func(ec ErrorContext, eventType string, err error) ErrorResponse
-type EosErrorHandler func(topicPartition TopicPartition, err error) ErrorResponse
+type TxnErrorHandler func(err error) ErrorResponse
 
 func DefaultDeserializationErrorHandler(ec ErrorContext, eventType string, err error) ErrorResponse {
 	log.Errorf("failed to deserialize record for %+v, offset: %d, eventType: %s,error: %v", ec.TopicPartition(), ec.Offset(), eventType, err)
-	return CompleteAndContinue
+	return Continue
 }
 
-func DefaultEosErrorHandler(topicPartition TopicPartition, err error) ErrorResponse {
-	log.Errorf("failing consumer due to eos failure in %+v, error: %v", topicPartition, err)
+func DefaultTxnErrorHandler(err error) ErrorResponse {
+	log.Errorf("failing consumer due to eos txn error: %v", err)
 	return FailConsumer
 }

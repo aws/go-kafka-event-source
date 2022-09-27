@@ -14,9 +14,19 @@
 
 package streams
 
-import "fmt"
+import (
+	"fmt"
+	"sync/atomic"
+)
 
 type SourcePartitionEventHandler func(*Source, int32)
+
+type EventSourceState uint64
+
+const (
+	Healthy EventSourceState = iota
+	Unhealthy
+)
 
 type EventSourceConfig struct {
 	// The group id for the underlying Kafka consumer group.
@@ -71,11 +81,17 @@ type EventSourceConfig struct {
 	// This handler is invoked after GKES has stopped processing and has finished removing any associated resources for the partition.
 	OnPartitionRevoked          SourcePartitionEventHandler
 	DeserializationErrorHandler DeserializationErrorHandler
-	EosErrorHandler             EosErrorHandler
+	TxnErrorHandler             TxnErrorHandler
 }
 
 type Source struct {
-	config EventSourceConfig
+	state   uint64
+	config  EventSourceConfig
+	failure chan error
+}
+
+func newSource(config EventSourceConfig) *Source {
+	return &Source{state: uint64(Healthy), config: config, failure: make(chan error)}
 }
 
 func (s *Source) AsDestination() Destination {
@@ -106,15 +122,15 @@ func (s *Source) shouldMarkCommit() bool {
 	return s.config.CommitOffsets
 }
 
-func (s *Source) eosErrorHandler() EosErrorHandler {
-	if s.config.EosErrorHandler == nil {
-		return DefaultEosErrorHandler
+func (s *Source) eosErrorHandler() TxnErrorHandler {
+	if s.config.TxnErrorHandler == nil {
+		return DefaultTxnErrorHandler
 	}
-	return s.config.EosErrorHandler
+	return s.config.TxnErrorHandler
 }
 
 func (s *Source) deserializationErrorHandler() DeserializationErrorHandler {
-	if s.config.EosErrorHandler == nil {
+	if s.config.TxnErrorHandler == nil {
 		return DefaultDeserializationErrorHandler
 	}
 	return s.config.DeserializationErrorHandler
@@ -126,6 +142,14 @@ func (s *Source) executeHandler(handler SourcePartitionEventHandler, partitions 
 			handler(s, p)
 		}
 	}
+}
+
+func (s *Source) State() EventSourceState {
+	return EventSourceState(atomic.LoadUint64(&s.state))
+}
+
+func (s *Source) fail(err error) {
+	atomic.StoreUint64(&s.state, uint64(Unhealthy))
 }
 
 func (s *Source) Topic() string {

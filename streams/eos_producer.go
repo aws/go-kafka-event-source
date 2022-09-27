@@ -197,14 +197,27 @@ func (pp *eosProducerPool[T]) tryFlush() {
 
 func (pp *eosProducerPool[T]) commitLoop() {
 	for p := range pp.commitQueue {
+		if p.source.State() != Healthy {
+			// we could have failed on begin transaction which happens outside this loop
+			// ensure we stop trying to process events in case of total failure
+			return
+		}
 		if pp.startTime.IsZero() {
 			pp.startTime = time.Now()
 		}
-		if err := p.commit(); err != nil {
-			log.Errorf("%v", err)
+		instructions, err := p.commit()
+		if err != nil {
+			log.Errorf("txn commit error: %v", err)
+		}
+		switch instructions {
+		case FatallyExit:
+			p.source.fail(err) // set failure mode in case this panic is trapped
+			panic(err)
+		case FailConsumer:
+			p.source.fail(err)
+			return
 		}
 		pp.producerNodeQueue <- p
-		log.Tracef("committed %d executions in: %v", pp.onDeck.eventContextCnt, sincer{p.firstEvent})
 	}
 }
 
@@ -229,20 +242,18 @@ type producerNode[T any] struct {
 	produceLock      sync.Mutex
 	firstEvent       time.Time
 	id               int
-	eosErrorHandler  EosErrorHandler
+	txnErrorHandler  TxnErrorHandler
 	// errs                  []error
 }
 
 func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitLog, partitionOwners partitionOwners[T], commitClient *kgo.Client, metrics chan Metric) *producerNode[T] {
-	client, err := NewClient(
+	client := sak.Must(NewClient(
 		source.stateCluster(),
 		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
 		kgo.TransactionalID(uuid.NewString()),
 		kgo.TransactionTimeout(6*time.Second),
-	)
-	if err != nil {
-		panic(err)
-	}
+	))
+
 	return &producerNode[T]{
 		client:           client,
 		metrics:          metrics,
@@ -253,7 +264,7 @@ func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitL
 		shouldMarkCommit: source.shouldMarkCommit(),
 		currentParitions: make(map[int32]eventContextDll[T]),
 		partitionOwners:  partitionOwners,
-		eosErrorHandler:  source.eosErrorHandler(),
+		txnErrorHandler:  source.eosErrorHandler(),
 	}
 }
 
@@ -311,12 +322,26 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 
 	p.eventContextCnt++
 	if startTxn {
-		if err := p.client.BeginTransaction(); err != nil {
-			log.Errorf("txn err: %v", err)
-		}
+		p.beginTransaction()
 	}
 	p.partitionLock.Unlock()
 	return startTxn
+}
+
+func (p *producerNode[T]) beginTransaction() {
+	if err := p.client.BeginTransaction(); err != nil {
+		log.Errorf("could not begin txn err: %v", err)
+		if instructions := p.handleTxnError(err); instructions != Continue {
+			p.source.fail(err)
+		}
+	}
+}
+
+func (p *producerNode[T]) handleTxnError(err error) ErrorResponse {
+	if err == nil {
+		return Continue
+	}
+	return p.txnErrorHandler(err)
 }
 
 func (p *producerNode[T]) setProducerFor(partition int32) bool {
@@ -362,7 +387,7 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) {
 
 }
 
-func (p *producerNode[T]) commit() error {
+func (p *producerNode[T]) commit() (ErrorResponse, error) {
 	commitStart := time.Now()
 	defer p.commitWaiter.Unlock()
 	for tp := range p.currentParitions {
@@ -376,17 +401,17 @@ func (p *producerNode[T]) commit() error {
 	p.partitionLock.RUnlock()
 	err := p.client.Flush(ctx)
 	cancelFlush()
-	if err != nil {
+	if instructions := p.handleTxnError(err); instructions != Continue {
 		log.Errorf("eos producer error: %v", err)
+		return instructions, err
 	}
 	err = p.client.EndTransaction(context.Background(), kgo.TryCommit)
-	if err != nil {
+	if instructions := p.handleTxnError(err); instructions != Continue {
 		log.Errorf("eos producer txn error: %v", err)
-		p.clearRevokedState()
-	} else {
-		p.clearState(commitStart)
+		return instructions, err
 	}
-	return err
+	p.clearState(commitStart)
+	return Continue, err
 }
 
 func (p *producerNode[T]) clearState(executionTime time.Time) {
@@ -462,32 +487,32 @@ func (p *producerNode[T]) relinquishOwnership() {
 	}
 }
 
-func (p *producerNode[T]) clearRevokedState() {
-	// we're in an error state in our eosProducer
-	// we may retry the commit, but if any partitions were revoked
-	// we do not want to retry them. So let's remove them from internal state
+// func (p *producerNode[T]) clearRevokedState() {
+// 	// we're in an error state in our eosProducer
+// 	// we may retry the commit, but if any partitions were revoked
+// 	// we do not want to retry them. So let's remove them from internal state
 
-	revokedPartitions := make(map[int32]struct{})
-	for partition, dll := range p.currentParitions {
-		if dll.root.isRevoked() {
-			revokedPartitions[partition] = struct{}{}
-			for ec := dll.root; ec != nil; ec = ec.next {
-				ec.abandon() // we're not going to retry these items, mark them so
-			}
-		}
-	}
-	if len(revokedPartitions) > 0 {
-		// we have revocations, remove them from recordsToProduce so if we retry, we are not breaking eos
-		validRecords := make([]recordAndEventContext[T], 0, len(p.recordsToProduce))
-		for _, record := range p.recordsToProduce {
-			if _, ok := revokedPartitions[record.eventContext.partition()]; !ok {
-				validRecords = append(validRecords, record)
-			}
-		}
-		p.recordsToProduce = validRecords
-	}
+// 	revokedPartitions := make(map[int32]struct{})
+// 	for partition, dll := range p.currentParitions {
+// 		if dll.root.isRevoked() {
+// 			revokedPartitions[partition] = struct{}{}
+// 			for ec := dll.root; ec != nil; ec = ec.next {
+// 				ec.abandon() // we're not going to retry these items, mark them so
+// 			}
+// 		}
+// 	}
+// 	if len(revokedPartitions) > 0 {
+// 		// we have revocations, remove them from recordsToProduce so if we retry, we are not breaking eos
+// 		validRecords := make([]recordAndEventContext[T], 0, len(p.recordsToProduce))
+// 		for _, record := range p.recordsToProduce {
+// 			if _, ok := revokedPartitions[record.eventContext.partition()]; !ok {
+// 				validRecords = append(validRecords, record)
+// 			}
+// 		}
+// 		p.recordsToProduce = validRecords
+// 	}
 
-}
+// }
 
 func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record) {
 	p.produceLock.Lock()

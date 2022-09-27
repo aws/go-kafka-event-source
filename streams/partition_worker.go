@@ -34,8 +34,10 @@ const (
 	// Incomplete signals the EventSource that the event or interjection is still ongoing, and
 	// that your application promises to fulfill the EventContext in the future.
 	// The offset for the associated EventContext will not be commited.
-	Incomplete  ExecutionState = 1
-	unknownType ExecutionState = 2
+	Incomplete ExecutionState = 1
+
+	Fatal       ExecutionState = 2
+	unknownType ExecutionState = 3
 )
 
 type partitionWorker[T StateStore] struct {

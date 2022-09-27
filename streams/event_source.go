@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +39,7 @@ type EventSource[T StateStore] struct {
 	runStatus         sak.RunStatus
 	done              chan struct{}
 	metrics           chan Metric
+	stopOnce          sync.Once
 }
 
 // Create an EventSource.
@@ -71,6 +73,19 @@ func NewEventSource[T StateStore](sourceConfig EventSourceConfig, stateStoreFact
 func (es *EventSource[T]) ConsumeEvents() {
 	go es.emitMetrics()
 	go es.consumer.start()
+	go es.closeOnFail()
+}
+
+func (es *EventSource[T]) State() EventSourceState {
+	return es.source.State()
+}
+
+func (es *EventSource[T]) closeOnFail() {
+	err := <-es.source.failure
+	log.Errorf("closing consumer due to failure: %v", err)
+	// since the consumer will stop processing all together
+	// we want to immediatelyy relinquich control of all partitions
+	es.StopNow()
 }
 
 func (es *EventSource[T]) EmitMetric(m Metric) {
@@ -217,14 +232,17 @@ func (es *EventSource[T]) Done() <-chan struct{} {
 // To simplify running from main(), the [streams.EventSource.WaitForSignals] and [streams.EventSource.WaitForChannel] calls have been provided.
 // So unless you have extremely complex application shutdown logic, you should not need to interact with this method directly.
 func (es *EventSource[T]) Stop() {
-	go func() {
-		<-es.consumer.leave()
-		es.runStatus.Halt()
-		select {
-		case es.done <- struct{}{}:
-		default:
-		}
-	}()
+	es.stopOnce.Do(func() {
+		go func() {
+			<-es.consumer.leave()
+			es.runStatus.Halt()
+			select {
+			case es.done <- struct{}{}:
+			default:
+			}
+		}()
+	})
+
 }
 
 // Immediately stops the underlying consumer *kgo.Client by invoking sc.client.Close()
@@ -364,7 +382,7 @@ func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record Incomi
 	if event, err := epe.decode(record); err == nil {
 		return epe.process(ec, event)
 	} else {
-		if epe.handleDeserializationError(ec, record.RecordType(), err) == CompleteAndContinue {
+		if epe.handleDeserializationError(ec, record.RecordType(), err) == Continue {
 			return Complete, err
 		}
 		return Incomplete, err
