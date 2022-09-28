@@ -127,7 +127,9 @@ func (pp *eosProducerPool[T]) addEventContext(ec *EventContext[T]) {
 }
 
 func (pp *eosProducerPool[T]) doForwardExecutionContexts(ec *EventContext[T]) {
-	if ec.isRevoked() {
+	revoked := ec.isRevoked()
+	ec.executeChan <- !revoked
+	if revoked {
 		// if we're revoked, don't even add this to the onDeck producer
 		return
 	}

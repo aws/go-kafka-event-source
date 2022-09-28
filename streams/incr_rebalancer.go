@@ -398,12 +398,25 @@ func (ir *incrementalRebalancer) ParseSyncAssignment(assignment []byte) (map[str
 			go ir.instructionHandler.PrepareTopicPartition(tp)
 		}
 	}
-	for _, tp := range instructions.Forget {
-		prepping := ir.preparing.Remove(tp)
-		prepped := ir.ready.Remove(tp)
-		if prepping || prepped {
-			go ir.instructionHandler.ForgetPreparedTopicPartition(tp)
+	if len((instructions.Forget)) > 0 {
+		// if we were intructed to forget a partition, we will need to force a rebalance
+		// otherwise the group balancer could become stuck if we were in the middle of trasnferring a partition
+		wg := &sync.WaitGroup{}
+		wg.Add(len(instructions.Forget))
+		for _, tp := range instructions.Forget {
+			prepping := ir.preparing.Remove(tp)
+			prepped := ir.ready.Remove(tp)
+			if prepping || prepped {
+				go func() {
+					ir.instructionHandler.ForgetPreparedTopicPartition(tp)
+					wg.Done()
+				}()
+			} else {
+				wg.Done()
+			}
 		}
+		wg.Wait()
+		ir.client().ForceRebalance()
 	}
 
 	return parsed, err

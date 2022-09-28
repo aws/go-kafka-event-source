@@ -43,7 +43,7 @@ const (
 type partitionWorker[T StateStore] struct {
 	eosProducer         *eosProducerPool[T]
 	partitionInput      chan []*kgo.Record
-	recordInput         chan *kgo.Record
+	eventInput          chan *EventContext[T]
 	asyncCompleter      asyncCompleter[T]
 	interjectionChannel chan *interjection[T]
 	stopSignal          chan struct{}
@@ -55,9 +55,7 @@ type partitionWorker[T StateStore] struct {
 	pending             int64
 	processed           int64
 	highestOffset       int64
-	// eventContextPool    []*EventContext[T]
-	// eventContextLock    sync.Mutex
-	topicPartition TopicPartition
+	topicPartition      TopicPartition
 }
 
 func newPartitionWorker[T StateStore](
@@ -85,7 +83,7 @@ func newPartitionWorker[T StateStore](
 			asyncFullReply: make(chan struct{}, 1),
 		},
 		partitionInput:      make(chan []*kgo.Record, 1),
-		recordInput:         make(chan *kgo.Record, recordsInputSize),
+		eventInput:          make(chan *EventContext[T], recordsInputSize),
 		interjectionChannel: make(chan *interjection[T], 1),
 		runStatus:           eventSource.runStatus.Fork(),
 		highestOffset:       -1,
@@ -122,7 +120,11 @@ func (pw *partitionWorker[T]) pushRecords() {
 		case records := <-pw.partitionInput:
 			if !pw.isRevoked() {
 				for _, record := range records {
-					pw.recordInput <- record
+					if record != nil {
+						ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
+						pw.eosProducer.addEventContext(ec)
+						pw.eventInput <- ec
+					}
 				}
 			}
 		case <-pw.runStatus.Done():
@@ -130,7 +132,7 @@ func (pw *partitionWorker[T]) pushRecords() {
 			pw.stopSignal <- struct{}{}
 			<-pw.stopped
 			close(pw.partitionInput)
-			close(pw.recordInput)
+			close(pw.eventInput)
 			close(pw.asyncCompleter.asyncJobs)
 			log.Debugf("Closed worker for %+v", pw.topicPartition)
 			return
@@ -154,11 +156,11 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	pw.eventSource.source.onPartitionActivated(pw.topicPartition.Partition)
 	for {
 		select {
-		case record := <-pw.recordInput:
-			if record != nil {
-				ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
-				pw.handleEvent(ec)
-			}
+		case ec := <-pw.eventInput:
+			// if ec != nil {
+			// ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
+			pw.handleEvent(ec)
+			// }
 		case job := <-pw.asyncCompleter.asyncJobs:
 			// TODO: if the partition was reject and we have not tried to produce yet
 			// drop this event. This is tricky because we need to know if we are buffered or not
@@ -220,10 +222,8 @@ func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
 		return
 	}
 	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw)
-	if pw.eosProducer != nil {
-		pw.eosProducer.addEventContext(ec)
-	}
-	if inter.interject(ec) == Complete {
+	pw.eosProducer.addEventContext(ec)
+	if <-ec.executeChan && inter.interject(ec) == Complete {
 		ec.complete()
 	}
 }
@@ -252,9 +252,9 @@ func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
 }
 
 func (pw *partitionWorker[T]) forwardToEventSource(ec *EventContext[T]) {
-	if pw.eosProducer != nil {
-		// this will block until a producer node is available and assign it to the event context
-		pw.eosProducer.addEventContext(ec)
+	if exec := <-ec.executeChan; !exec {
+		// if we're revoked, don't even add this to the onDeck producer
+		return
 	}
 	record, _ := ec.Input()
 	state, err := pw.eventSource.handleEvent(ec, record)

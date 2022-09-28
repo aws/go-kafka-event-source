@@ -21,13 +21,13 @@ import (
 	"github.com/aws/go-kafka-event-source/streams/sak"
 )
 
-type BatchItem[S StateStore, K comparable, V any] struct {
+type BatchItem[S any, K comparable, V any] struct {
 	EventContext *EventContext[S]
 	Key          K
 	Item         V
 }
 
-func NewBatchItem[S StateStore, K comparable, V any](ec *EventContext[S], key K, item V) BatchItem[S, K, V] {
+func NewBatchItem[S any, K comparable, V any](ec *EventContext[S], key K, item V) BatchItem[S, K, V] {
 	return BatchItem[S, K, V]{
 		EventContext: ec,
 		Key:          key,
@@ -35,7 +35,7 @@ func NewBatchItem[S StateStore, K comparable, V any](ec *EventContext[S], key K,
 	}
 }
 
-type BatchExecutor[S StateStore, K comparable, V any] func(batch []BatchItem[S, K, V])
+type BatchExecutor[S any, K comparable, V any] func(batch []BatchItem[S, K, V])
 
 type asyncBatchState int
 
@@ -44,7 +44,7 @@ const (
 	batcherExecuting
 )
 
-type asyncBatch[S StateStore, K comparable, V any] struct {
+type asyncBatch[S any, K comparable, V any] struct {
 	items      []BatchItem[S, K, V]
 	state      asyncBatchState
 	flushTimer *time.Timer
@@ -64,19 +64,19 @@ func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
 	b.state = batcherReady
 }
 
-type AsyncBatcher[S StateStore, K comparable, V any] struct {
+type AsyncBatcher[S any, K comparable, V any] struct {
 	batches        []*asyncBatch[S, K, V]
 	assignments    map[K]*asyncBatch[S, K, V]
 	pendingItems   *sak.List[BatchItem[S, K, V]]
 	executor       BatchExecutor[S, K, V]
 	executingCount int
 	MaxBatchSize   int
-	MinBatchSize   int
-	BatchDelay     time.Duration
-	mux            sync.Mutex
+	// MinBatchSize   int
+	BatchDelay time.Duration
+	mux        sync.Mutex
 }
 
-func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[S, K, V], minBatchSize, maxBatchSize, maxConcurrentBatches int) *AsyncBatcher[S, K, V] {
+func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[S, K, V], maxBatchSize, maxConcurrentBatches int) *AsyncBatcher[S, K, V] {
 	batches := make([]*asyncBatch[S, K, V], maxConcurrentBatches)
 	for i := range batches {
 		batches[i] = &asyncBatch[S, K, V]{
@@ -89,8 +89,8 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 		pendingItems: sak.NewList[BatchItem[S, K, V]](),
 		batches:      batches,
 		MaxBatchSize: maxBatchSize,
-		MinBatchSize: minBatchSize,
-		BatchDelay:   time.Millisecond * 5,
+		// MinBatchSize: minBatchSize,
+		BatchDelay: time.Millisecond * 5,
 	}
 }
 
@@ -176,8 +176,7 @@ func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[S, K, V]) {
 }
 
 func (ab *AsyncBatcher[S, K, V]) flushPendingItems() {
-	el := ab.pendingItems.Front()
-	for el != nil {
+	for el := ab.pendingItems.Front(); el != nil; {
 		if batch := ab.batchFor(el.Value); batch != nil {
 			ab.addToBatch(el.Value, batch)
 			if ab.executingCount == len(ab.batches) {

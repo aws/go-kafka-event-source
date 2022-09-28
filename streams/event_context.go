@@ -31,6 +31,7 @@ type EventContext[T any] struct {
 	// we're going to keep a reference to the partition worker context
 	// so we can skip over any buffered events in the EOSProducer
 	ctx            context.Context
+	executeChan    chan bool
 	next           *EventContext[T]
 	prev           *EventContext[T]
 	producer       *producerNode[T]
@@ -184,6 +185,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 	input := newIncomingRecord(record)
 	ec := &EventContext[T]{
 		ctx:            ctx,
+		executeChan:    make(chan bool, 1),
 		topicPartition: input.TopicPartition(),
 		changeLog:      changeLog,
 		input:          input,
@@ -198,6 +200,7 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
 		ctx:            ctx,
+		executeChan:    make(chan bool, 1),
 		topicPartition: topicPartition,
 		isInterjection: true,
 		changeLog:      changeLog,
