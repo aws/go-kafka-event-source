@@ -50,5 +50,5 @@ func DefaultDeserializationErrorHandler(ec ErrorContext, eventType string, err e
 
 func DefaultTxnErrorHandler(err error) ErrorResponse {
 	log.Errorf("failing consumer due to eos txn error: %v", err)
-	return FailConsumer
+	return FatallyExit
 }

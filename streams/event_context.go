@@ -17,37 +17,28 @@ package streams
 import (
 	"context"
 	"sync"
+	"unsafe"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-type pendingRecords struct {
-	records []*Record
-}
-
 // Contains information about the current event. Is passed to EventProcessors and Interjections
 type EventContext[T any] struct {
 	// we're going to keep a reference to the partition worker context
 	// so we can skip over any buffered events in the EOSProducer
-	ctx            context.Context
-	executeChan    chan bool
-	next           *EventContext[T]
-	prev           *EventContext[T]
-	producer       *producerNode[T]
-	pendingRecords *pendingRecords
-	input          IncomingRecord
-	asynCompleter  asyncCompleter[T]
-	changeLog      changeLogData[T]
-	wg             sync.WaitGroup
-	produceLock    sync.Mutex
-	topicPartition TopicPartition
-	isInterjection bool
-	mustProduce    bool
-}
-
-func (ec *EventContext[T]) waitUntilComplete() {
-	ec.wg.Wait()
+	ctx              context.Context
+	producerChan     chan *producerNode[T]
+	producer         *producerNode[T]
+	revocationWaiter *sync.WaitGroup
+	next             *EventContext[T]
+	prev             *EventContext[T]
+	input            IncomingRecord
+	asynCompleter    asyncCompleter[T]
+	changeLog        changeLogData[T]
+	done             chan struct{}
+	topicPartition   TopicPartition
+	isInterjection   bool
 }
 
 func (ec *EventContext[T]) isRevoked() bool {
@@ -79,35 +70,23 @@ func (ec *EventContext[T]) partition() int32 {
 
 // Forwards records to the transactional producer for your EventSource.
 func (ec *EventContext[T]) Forward(records ...*Record) {
-	ec.produceLock.Lock()
-	defer ec.produceLock.Unlock()
 	for _, record := range records {
-		if ec.producer == nil {
-			ec.pendingRecords.records = append(ec.pendingRecords.records, record)
-		} else {
-			ec.producer.produceRecord(ec, record)
-		}
+		ec.producer.produceRecord(ec, record, nil)
 	}
-
 }
 
 // Forwards records to the transactional producer for your EventSource. When you add an item to your StateStore,
 // you must call this method for that change to be recorded in the stream. This ensures that when the TopicPartition for this change
 // is tansferred to a new consumer, it will also have this change.
 func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
-	ec.produceLock.Lock()
-	defer ec.produceLock.Unlock()
 	for _, entry := range entries {
 		if len(ec.changeLog.topic) > 0 {
 			log.Tracef("RecordChange changeLogTopic: %s, topicPartition: %+v, value: %v", ec.changeLog.topic, ec.topicPartition, entry)
 			record := entry.record.
 				WithTopic(ec.changeLog.topic).
 				WithPartition(ec.topicPartition.Partition)
-			if ec.producer != nil {
-				ec.producer.produceRecord(ec, record)
-			} else {
-				ec.pendingRecords.records = append(ec.pendingRecords.records, record)
-			}
+
+			ec.producer.produceRecord(ec, record, nil)
 		} else {
 			log.Warnf("EventContext.RecordChange was called but consumer is not stateful")
 		}
@@ -125,36 +104,6 @@ func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, err
 	})
 }
 
-func (ec *EventContext[T]) flushPendingRecords() {
-	for _, record := range ec.pendingRecords.records {
-		ec.producer.produceRecord(ec, record)
-	}
-	pendingRecordPool.Release(ec.pendingRecords)
-	ec.pendingRecords = nil
-}
-
-// func (ec *EventContext[T]) abandon() {
-// 	ec.mustProduce = false
-// }
-
-func (ec *EventContext[T]) includeInTxn() bool {
-	return ec.mustProduce
-}
-
-func (ec *EventContext[T]) setProducer(p *producerNode[T]) {
-	ec.produceLock.Lock()
-	// an event context can only ever have 1 producer
-	if ec.producer == nil && !ec.isRevoked() {
-		// we are at the point of no return
-		// if the partition is rejected, we must wait for this event to finish
-		// before relinquiching control
-		ec.mustProduce = true
-		ec.producer = p
-		ec.flushPendingRecords()
-	}
-	ec.produceLock.Unlock()
-}
-
 // Return the raw input record for this event or an uninitialized record and false if the EventContect represents an Interjections
 func (ec *EventContext[T]) Input() (IncomingRecord, bool) {
 	return ec.input, !ec.isInterjection
@@ -166,47 +115,38 @@ func (ec *EventContext[T]) Store() T {
 }
 
 func (ec *EventContext[T]) complete() {
-	ec.wg.Done()
+	// ec.wg.Done()
+	close(ec.done)
 }
-
-var pendingRecordPool = sak.NewPool(10000,
-	func() *pendingRecords {
-		return new(pendingRecords)
-	},
-	func(pending *pendingRecords) *pendingRecords {
-		for i := range pending.records {
-			pending.records[i] = nil
-		}
-		pending.records = pending.records[0:0]
-		return pending
-	})
 
 func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	input := newIncomingRecord(record)
 	ec := &EventContext[T]{
-		ctx:            ctx,
-		executeChan:    make(chan bool, 1),
-		topicPartition: input.TopicPartition(),
-		changeLog:      changeLog,
-		input:          input,
-		isInterjection: false,
-		asynCompleter:  pw.asyncCompleter,
-		pendingRecords: pendingRecordPool.Borrow(),
+		ctx:              ctx,
+		producerChan:     make(chan *producerNode[T], 1),
+		topicPartition:   input.TopicPartition(),
+		changeLog:        changeLog,
+		input:            input,
+		isInterjection:   false,
+		asynCompleter:    pw.asyncCompleter,
+		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
+		done:             make(chan struct{}),
+		// pendingRecords: pendingRecordPool.Borrow(),
 	}
-	ec.wg.Add(1)
 	return ec
 }
 
 func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
-		ctx:            ctx,
-		executeChan:    make(chan bool, 1),
-		topicPartition: topicPartition,
-		isInterjection: true,
-		changeLog:      changeLog,
-		asynCompleter:  pw.asyncCompleter,
-		pendingRecords: pendingRecordPool.Borrow(),
+		ctx:              ctx,
+		producerChan:     make(chan *producerNode[T], 1),
+		topicPartition:   topicPartition,
+		isInterjection:   true,
+		changeLog:        changeLog,
+		asynCompleter:    pw.asyncCompleter,
+		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
+		done:             make(chan struct{}),
+		// pendingRecords: pendingRecordPool.Borrow(),
 	}
-	ec.wg.Add(1)
 	return ec
 }

@@ -196,14 +196,25 @@ func (sc *eventSourceConsumer[T]) assignPartitions(topic string, partitions []in
 	for _, p := range partitions {
 		tp := TopicPartition{Partition: p, Topic: topic}
 		store := sc.partitionedStore.assign(p)
+
+		// we want to pause this until the partitionWorker is ready
+		// otherwise we could fill our buffer and block other partitions while we sync the state store
+		// sc.client.PauseFetchPartitions(map[string][]int32{topic: {p}})
+
 		if prepper, ok := sc.prepping[p]; ok {
 			log.Infof("syncing prepped partition %+v", prepper.topicPartition)
 			delete(sc.prepping, p)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, prepper.sync)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, func() {
+				prepper.sync()
+				// sc.client.ResumeFetchPartitions(map[string][]int32{topic: {p}})
+			})
 		} else if _, ok := sc.workers[p]; !ok {
 			prepper = sc.stateStoreConsumer.activatePartition(p, store)
 			log.Infof("syncing unprepped partition %+v", prepper.topicPartition)
-			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, prepper.sync)
+			sc.workers[p] = newPartitionWorker(sc.eventSource, tp, sc.commitLog, store, sc.producerPool, func() {
+				prepper.sync()
+				// sc.client.ResumeFetchPartitions(map[string][]int32{topic: {p}})
+			})
 		}
 
 	}
@@ -298,6 +309,7 @@ func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T],
 			}
 			return state
 		},
+		callback: callback,
 	}
 }
 

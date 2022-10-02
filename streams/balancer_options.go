@@ -16,42 +16,30 @@ package streams
 
 import "github.com/twmb/franz-go/pkg/kgo"
 
-type BalanceType int
-
-type BalanceStrategy struct {
-	BalanceType   string
-	BalanceOption int
-}
+type BalanceStrategy int
 
 func toGroupBalancers(instructionHandler IncrRebalanceInstructionHandler, rs []BalanceStrategy) []kgo.GroupBalancer {
 	balancers := []kgo.GroupBalancer{}
 	for _, balancer := range rs {
-		switch balancer.BalanceType {
-		case RangeBalanceType:
+		switch balancer {
+		case RangeBalanceStrategy:
 			balancers = append(balancers, kgo.RangeBalancer())
-		case RoundRobinBalanceType:
+		case RoundRobinBalanceStrategy:
 			balancers = append(balancers, kgo.RoundRobinBalancer())
-		case CooperativeStickyBalanceType:
+		case CooperativeStickyBalanceStrategy:
 			balancers = append(balancers, kgo.CooperativeStickyBalancer())
-		case IncrementalBalanceType:
-			balancers = append(balancers, IncrementalRebalancer(instructionHandler, balancer.BalanceOption))
+		case IncrementalBalanceStrategy:
+			balancers = append(balancers, IncrementalRebalancer(instructionHandler))
 		}
 	}
 	return balancers
 }
 
 const (
-	RangeBalanceType             = "range"
-	RoundRobinBalanceType        = "round_robin"
-	CooperativeStickyBalanceType = "sticky"
-	IncrementalBalanceType       = "incr_coop"
+	RangeBalanceStrategy             BalanceStrategy = 0
+	RoundRobinBalanceStrategy        BalanceStrategy = 1
+	CooperativeStickyBalanceStrategy BalanceStrategy = 2
+	IncrementalBalanceStrategy       BalanceStrategy = 3
 )
 
-var (
-	RangeBalancer             = BalanceStrategy{BalanceType: RangeBalanceType}
-	RoundRobinBalancer        = BalanceStrategy{BalanceType: RoundRobinBalanceType}
-	CooperativeStickyBalancer = BalanceStrategy{BalanceType: CooperativeStickyBalanceType}
-	IncrementalBalancer       = BalanceStrategy{BalanceType: IncrementalBalanceType, BalanceOption: 1}
-)
-
-var DefaultBalanceStrategies = []BalanceStrategy{IncrementalBalancer}
+var DefaultBalanceStrategies = []BalanceStrategy{IncrementalBalanceStrategy}

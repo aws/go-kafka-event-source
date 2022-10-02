@@ -271,14 +271,14 @@ type IncrRebalanceInstructionHandler interface {
 // If a consumer host crashes, for example, it's partitions will be assigned immediately, regardless of preparation state.
 //
 // receivership - the state of being dealt with by an official receiver.
-func IncrementalRebalancer(instructionHandler IncrRebalanceInstructionHandler, activeTransitions int) IncrementalGroupRebalancer {
+func IncrementalRebalancer(instructionHandler IncrRebalanceInstructionHandler) IncrementalGroupRebalancer {
 	return &incrementalRebalancer{
 		// if we want to increase the number of max in-transition partitions, we need to do some more work.
 		// though there will never be an occasion where partitions are left unsassigned, they may get assigned to a
 		// consumer that is not prepared for them. once this is debugged, accept `maxIntransition int' as a
-		// constructor argument
+		// constructor argument.
 		balancerController: incrementalBalanceController{
-			budget:             activeTransitions,
+			budget:             1,
 			instructionHandler: instructionHandler,
 		},
 		quitChan:           make(chan struct{}, 1),
@@ -390,7 +390,10 @@ func (ir *incrementalRebalancer) ParseSyncAssignment(assignment []byte) (map[str
 		if shouldClose {
 			ir.memberStatus = Defunct
 			close(ir.gracefulChan)
+			// go ir.client().ForceRebalance()
+			return parsed, nil
 		}
+
 	}
 
 	for _, tp := range instructions.Prepare {

@@ -150,6 +150,7 @@ func (s *Source) State() EventSourceState {
 
 func (s *Source) fail(err error) {
 	atomic.StoreUint64(&s.state, uint64(Unhealthy))
+	s.failure <- err
 }
 
 func (s *Source) Topic() string {

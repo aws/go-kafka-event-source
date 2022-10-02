@@ -16,6 +16,7 @@ package streams
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,7 @@ type partitionWorker[T StateStore] struct {
 	processed           int64
 	highestOffset       int64
 	topicPartition      TopicPartition
+	revocationWaiter    sync.WaitGroup
 }
 
 func newPartitionWorker[T StateStore](
@@ -68,7 +70,7 @@ func newPartitionWorker[T StateStore](
 
 	eosConfig := eventSource.source.config.EosConfig
 
-	recordsInputSize := sak.Max(eosConfig.MaxBatchSize/10, 100)
+	recordsInputSize := sak.Max(eosConfig.MaxBatchSize/10, 10000)
 	asyncSize := recordsInputSize * 4
 	pw := &partitionWorker[T]{
 		eventSource:    eventSource,
@@ -82,13 +84,13 @@ func newPartitionWorker[T StateStore](
 			asyncJobs:      make(chan asyncJob[T], asyncSize),
 			asyncFullReply: make(chan struct{}, 1),
 		},
-		partitionInput:      make(chan []*kgo.Record, 1),
+		partitionInput:      make(chan []*kgo.Record, 128),
 		eventInput:          make(chan *EventContext[T], recordsInputSize),
 		interjectionChannel: make(chan *interjection[T], 1),
 		runStatus:           eventSource.runStatus.Fork(),
 		highestOffset:       -1,
 	}
-	go pw.pushRecords()
+
 	go pw.work(pw.eventSource.interjections, waiter, commitLog)
 
 	return pw
@@ -119,13 +121,7 @@ func (pw *partitionWorker[T]) pushRecords() {
 		select {
 		case records := <-pw.partitionInput:
 			if !pw.isRevoked() {
-				for _, record := range records {
-					if record != nil {
-						ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
-						pw.eosProducer.addEventContext(ec)
-						pw.eventInput <- ec
-					}
-				}
+				pw.scheduleTxnAndExecution(records)
 			}
 		case <-pw.runStatus.Done():
 			log.Debugf("Closing worker for %+v", pw.topicPartition)
@@ -140,6 +136,19 @@ func (pw *partitionWorker[T]) pushRecords() {
 	}
 }
 
+func (pw *partitionWorker[T]) scheduleTxnAndExecution(records []*kgo.Record) {
+	pw.revocationWaiter.Add(len(records)) // optimistically do one add call
+	for _, record := range records {
+		if record != nil && record.Offset >= pw.highestOffset {
+			ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
+			pw.eosProducer.addEventContext(ec)
+			pw.eventInput <- ec
+		} else {
+			pw.revocationWaiter.Done() // in the rare occasion this is a stale evetn, decrement the revocation waiter
+		}
+	}
+}
+
 func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(), commitLog *eosCommitLog) {
 	elapsed := sincer{time.Now()}
 	// don't start consuming until this function returns
@@ -147,6 +156,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	pw.highestOffset = commitLog.lastProcessed(pw.topicPartition)
 	log.Debugf("partitionWorker initialized %+v with lastProcessed offset: %d in %v", pw.topicPartition, pw.highestOffset, elapsed)
 	waiter()
+	go pw.pushRecords()
 	log.Debugf("partitionWorker activated %+v in %v, interjectionCount: %d", pw.topicPartition, elapsed, len(interjections))
 	ijPtrs := sak.ToPtrSlice(interjections)
 	for _, ij := range ijPtrs {
@@ -187,7 +197,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 }
 
 func (pw *partitionWorker[T]) waitForRevocation() {
-	pw.eosProducer.revokePartition(pw.topicPartition)
+	pw.revocationWaiter.Wait() // wait until all pending events have been accpted by a producerNode
 	pw.revokedSignal <- struct{}{}
 }
 
@@ -218,41 +228,36 @@ func (pw *partitionWorker[T]) isRevoked() bool {
 }
 
 func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
+	// // TODO: how to cancel one off interjections during a revocation?
 	if pw.isRevoked() {
+		if inter.callback != nil {
+			inter.callback()
+		}
 		return
 	}
+	pw.revocationWaiter.Add(1)
 	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw)
-	pw.eosProducer.addEventContext(ec)
-	if <-ec.executeChan && inter.interject(ec) == Complete {
+	pw.eosProducer.addInterjection(ec)
+	ec.producer = <-ec.producerChan
+	if ec.producer == nil && inter.callback != nil {
+		inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
+	} else if ec.producer != nil && inter.interject(ec) == Complete {
 		ec.complete()
 	}
 }
 
 func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
-	if pw.isRevoked() {
-		return false
-	}
 	offset := ec.Offset()
-	if offset < pw.highestOffset {
-		// Technically we have a race here as we start consuming from the topic
-		// based off of the results from commitLog.Watermark(), which is populated by a separate consumer.
-		// partitionWorker then get's a strongly consistent watermark from commitLog.lastProcessed() before going into it's processing loop
-		// it is possible that the 2 are different, and so we use commitLog.lastProcessed() to respect the eos promise
-		// and ignore records that have already been processed. It's is not likely this will ever happen in practice, as we are using cooperative rebalancing
-		// but let's be sure
-		log.Tracef("Dropping message due commitLog lag, offset: %d < %d for %+v", offset, pw.highestOffset, pw.topicPartition)
-		return true
-	}
-
 	atomic.AddInt64(&pw.pending, -1)
 	pw.forwardToEventSource(ec)
-	pw.highestOffset = offset
+	pw.highestOffset = offset + 1
 	atomic.AddInt64(&pw.processed, 1)
 	return true
 }
 
 func (pw *partitionWorker[T]) forwardToEventSource(ec *EventContext[T]) {
-	if exec := <-ec.executeChan; !exec {
+	ec.producer = <-ec.producerChan
+	if ec.producer == nil {
 		// if we're revoked, don't even add this to the onDeck producer
 		return
 	}

@@ -32,6 +32,7 @@ type interjection[T any] struct {
 	interjectChannel chan *interjection[T]
 	topicPartition   TopicPartition
 	timer            *time.Timer
+	callback         func()
 	cancelled        bool
 	isOneOff         bool
 	initOnce         sync.Once
