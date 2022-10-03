@@ -318,6 +318,7 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 		// we're not using a ptr, so be sure to set the value
 		p.currentPartitions[partition] = dll
 	} else {
+		ec.revocationWaiter.Add(1)
 		p.currentPartitions[partition] = eventContextDll[T]{
 			root: ec,
 			tail: ec,
@@ -398,8 +399,9 @@ func (p *producerNode[T]) commit() error {
 func (p *producerNode[T]) clearState(executionTime time.Time) {
 	p.txnContextCancel()
 	p.txnContext = nil
-	if p.shouldMarkCommit {
-		for _, ecs := range p.currentPartitions {
+	for _, ecs := range p.currentPartitions {
+		ecs.root.revocationWaiter.Done()
+		if p.shouldMarkCommit {
 			for ec := ecs.tail; ec != nil; ec = ec.prev {
 				if !ec.IsInterjection() {
 					p.commitClient.MarkCommitRecords(&ec.input.kRecord)

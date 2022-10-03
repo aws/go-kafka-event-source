@@ -112,7 +112,9 @@ func (sc SimpleCluster) Config() ([]kgo.Opt, error) {
 // NewClient creates a kgo.Client from the options retuned from the provided [Cluster] and addtional `options`.
 // Used internally and exposed for convenience.
 func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
-	configOptions := []kgo.Opt{kgo.WithLogger(kgoLogger), kgo.ProducerBatchCompression(kgo.NoCompression())}
+	configOptions := []kgo.Opt{kgo.WithLogger(kgoLogger),
+		kgo.ProducerBatchCompression(kgo.NoCompression()),
+		kgo.FetchIsolationLevel(kgo.ReadCommitted())}
 	clusterOpts, err := cluster.Config()
 	if err != nil {
 		return nil, err

@@ -42,7 +42,7 @@ You can use the provided [github.com/aws/go-kafka-event-source/streams/stores.Si
 # Vending State
 
 GKES purposefully does not provide a pre-canned way for exposing StateStore data, other than a producing to another Kafka topic.
-There are as many ways to vend data as there are web applications Rather than putting effort into inventing yet another one,
+There are as many ways to vend data as there are web applications. Rather than putting effort into inventing yet another one,
 GKES provides the mechanisms to query StateStores via Interjections. This mechanism can be plugged into whatever request/response mechanism that suits your use-case
 (gRPC, RESTful HTTP service...any number of web frameworks already in the Go ecosystem).
 [TODO: provide a simple http example]

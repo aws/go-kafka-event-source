@@ -216,7 +216,6 @@ func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] 
 		}),
 		kgo.FetchMaxWait(time.Second),
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
-		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 	)
 	if err != nil {
 		panic(err)
