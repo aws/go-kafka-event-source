@@ -80,32 +80,30 @@ var pendingRecordPool = sak.NewPool(10, func() []pendingRecord {
 })
 
 type eosProducerPool[T StateStore] struct {
-	producerNodeQueue  chan *producerNode[T]
-	onDeck             *producerNode[T]
-	commitQueue        chan *producerNode[T]
-	buffer             chan *EventContext[T]
-	interjectionBuffer chan *EventContext[T]
-	cfg                EosConfig
-	source             *Source
-	producerNodes      []*producerNode[T]
-	flushTimer         *time.Ticker
-	partitionOwners    partitionOwners[T]
-	startTime          time.Time
-	errorChannel       chan error
-	commitClient       *kgo.Client
+	producerNodeQueue chan *producerNode[T]
+	onDeck            *producerNode[T]
+	commitQueue       chan *producerNode[T]
+	buffer            chan *EventContext[T]
+	cfg               EosConfig
+	source            *Source
+	producerNodes     []*producerNode[T]
+	flushTimer        *time.Ticker
+	partitionOwners   partitionOwners[T]
+	startTime         time.Time
+	errorChannel      chan error
+	commitClient      *kgo.Client
 }
 
 func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client, metrics chan Metric) *eosProducerPool[T] {
 	pp := &eosProducerPool[T]{
-		cfg:                DefaultEosConfig,
-		producerNodeQueue:  make(chan *producerNode[T], cfg.PoolSize),
-		commitQueue:        make(chan *producerNode[T], cfg.PendingTxnCount),
-		buffer:             make(chan *EventContext[T], 1024),
-		interjectionBuffer: make(chan *EventContext[T]),
-		producerNodes:      make([]*producerNode[T], 0, cfg.PoolSize),
-		errorChannel:       make(chan error, 1024), //giving this some size so we don't block on errors in other go routines
-		source:             source,
-		commitClient:       commitClient,
+		cfg:               DefaultEosConfig,
+		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
+		commitQueue:       make(chan *producerNode[T], cfg.PendingTxnCount),
+		buffer:            make(chan *EventContext[T], 1024),
+		producerNodes:     make([]*producerNode[T], 0, cfg.PoolSize),
+		errorChannel:      make(chan error, 1024), //giving this some size so we don't block on errors in other go routines
+		source:            source,
+		commitClient:      commitClient,
 		partitionOwners: partitionOwners[T]{
 			owners: make(map[int32]*producerNode[T]),
 			mux:    new(sync.Mutex),
@@ -139,11 +137,6 @@ func (pp *eosProducerPool[T]) addEventContext(ec *EventContext[T]) {
 	pp.buffer <- ec
 }
 
-// buffer the event context until a producer node is available
-func (pp *eosProducerPool[T]) addInterjection(ec *EventContext[T]) {
-	pp.interjectionBuffer <- ec
-}
-
 func (pp *eosProducerPool[T]) doForwardExecutionContexts(ec *EventContext[T]) {
 	if ec.isRevoked() {
 		// if we're revoked, don't even add this to the onDeck producer
@@ -165,8 +158,6 @@ func (pp *eosProducerPool[T]) doForwardExecutionContexts(ec *EventContext[T]) {
 func (pp *eosProducerPool[T]) forwardExecutionContexts() {
 	for {
 		select {
-		case ec := <-pp.interjectionBuffer:
-			pp.doForwardExecutionContexts(ec)
 		case ec := <-pp.buffer:
 			pp.doForwardExecutionContexts(ec)
 		case <-pp.flushTimer.C:

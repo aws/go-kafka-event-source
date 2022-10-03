@@ -298,7 +298,7 @@ func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T],
 		}
 		return
 	}
-	w.interjectionChannel <- &interjection[T]{
+	w.interjectionInput <- &interjection[T]{
 		isOneOff:       true,
 		topicPartition: w.topicPartition,
 		interjector: func(ec *EventContext[T], t time.Time) ExecutionState {

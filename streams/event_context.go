@@ -38,6 +38,7 @@ type EventContext[T any] struct {
 	changeLog        changeLogData[T]
 	done             chan struct{}
 	topicPartition   TopicPartition
+	interjection     *interjection[T]
 	isInterjection   bool
 }
 
@@ -136,11 +137,12 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 	return ec
 }
 
-func newInterjectionContext[T StateStore](ctx context.Context, topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
+func newInterjectionContext[T StateStore](ctx context.Context, interjection *interjection[T], topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
 		ctx:              ctx,
 		producerChan:     make(chan *producerNode[T], 1),
 		topicPartition:   topicPartition,
+		interjection:     interjection,
 		isInterjection:   true,
 		changeLog:        changeLog,
 		asynCompleter:    pw.asyncCompleter,

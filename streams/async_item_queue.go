@@ -21,21 +21,21 @@ import (
 const minWorkItemQueueSize = 2
 
 /*
-	This is a thread safe fifo queue implementation, implemented via a peakable buffer.
-	It will actually report a size of maxSize + 1 items when there is a penging put.
+This is a thread safe fifo queue implementation, implemented via a peakable buffer.
+It will actually report a size of maxSize + 1 items when there is a penging put.
 
-	We're adding this to eliminate the FifoQueueFullError condition
-	which currently results in a thread.Sleep().
+We're adding this to eliminate the FifoQueueFullError condition
+which currently results in a thread.Sleep().
 
-	Instead, we'll provide a blocking fixed size buffer to provide backpressure.
-	We're going to use a channel as this will decrease the number of allocations and type conversions
-	that are required for linked list. Queue operations make no memory allocations.
+Instead, we'll provide a blocking fixed size buffer to provide backpressure.
+We're going to use a channel as this will decrease the number of allocations and type conversions
+that are required for linked list. Queue operations make no memory allocations.
 
-	Obviously, in a multi-sender context, the separate go-routines will be racing for order, which may be OK depending on use case
+# Obviously, in a multi-sender context, the separate go-routines will be racing for order, which may be OK depending on use case
 
-	`done()` reports true if head and channel are empty and there are no pending writes to the channel
+`done()` reports true if head and channel are empty and there are no pending writes to the channel
 
-	see async_scheduler.go notes as to why we have a tryEnqueue and resumeEnqueue call
+see async_scheduler.go notes as to why we have a tryEnqueue and resumeEnqueue call
 */
 type asyncItemQueue[T any] struct {
 	size     int32

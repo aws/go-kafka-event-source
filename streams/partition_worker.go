@@ -42,22 +42,23 @@ const (
 )
 
 type partitionWorker[T StateStore] struct {
-	eosProducer         *eosProducerPool[T]
-	partitionInput      chan []*kgo.Record
-	eventInput          chan *EventContext[T]
-	asyncCompleter      asyncCompleter[T]
-	interjectionChannel chan *interjection[T]
-	stopSignal          chan struct{}
-	revokedSignal       chan struct{}
-	stopped             chan struct{}
-	changeLog           changeLogPartition[T]
-	eventSource         *EventSource[T]
-	runStatus           sak.RunStatus
-	pending             int64
-	processed           int64
-	highestOffset       int64
-	topicPartition      TopicPartition
-	revocationWaiter    sync.WaitGroup
+	eosProducer            *eosProducerPool[T]
+	partitionInput         chan []*kgo.Record
+	interjectionInput      chan *interjection[T]
+	eventInput             chan *EventContext[T]
+	interjectionEventInput chan *EventContext[T]
+	asyncCompleter         asyncCompleter[T]
+	stopSignal             chan struct{}
+	revokedSignal          chan struct{}
+	stopped                chan struct{}
+	changeLog              changeLogPartition[T]
+	eventSource            *EventSource[T]
+	runStatus              sak.RunStatus
+	pending                int64
+	processed              int64
+	highestOffset          int64
+	topicPartition         TopicPartition
+	revocationWaiter       sync.WaitGroup
 }
 
 func newPartitionWorker[T StateStore](
@@ -70,7 +71,7 @@ func newPartitionWorker[T StateStore](
 
 	eosConfig := eventSource.source.config.EosConfig
 
-	recordsInputSize := sak.Max(eosConfig.MaxBatchSize/10, 10000)
+	recordsInputSize := sak.Max(eosConfig.MaxBatchSize/10, 100)
 	asyncSize := recordsInputSize * 4
 	pw := &partitionWorker[T]{
 		eventSource:    eventSource,
@@ -78,17 +79,18 @@ func newPartitionWorker[T StateStore](
 		changeLog:      changeLog,
 		eosProducer:    eosProducer,
 		stopSignal:     make(chan struct{}),
-		revokedSignal:  make(chan struct{}),
+		revokedSignal:  make(chan struct{}, 1),
 		stopped:        make(chan struct{}),
 		asyncCompleter: asyncCompleter[T]{
 			asyncJobs:      make(chan asyncJob[T], asyncSize),
 			asyncFullReply: make(chan struct{}, 1),
 		},
-		partitionInput:      make(chan []*kgo.Record, 128),
-		eventInput:          make(chan *EventContext[T], recordsInputSize),
-		interjectionChannel: make(chan *interjection[T], 1),
-		runStatus:           eventSource.runStatus.Fork(),
-		highestOffset:       -1,
+		partitionInput:         make(chan []*kgo.Record, 128),
+		eventInput:             make(chan *EventContext[T], recordsInputSize),
+		interjectionInput:      make(chan *interjection[T], 1),
+		interjectionEventInput: make(chan *EventContext[T], 1),
+		runStatus:              eventSource.runStatus.Fork(),
+		highestOffset:          -1,
 	}
 
 	go pw.work(pw.eventSource.interjections, waiter, commitLog)
@@ -123,6 +125,8 @@ func (pw *partitionWorker[T]) pushRecords() {
 			if !pw.isRevoked() {
 				pw.scheduleTxnAndExecution(records)
 			}
+		case ij := <-pw.interjectionInput:
+			pw.scheduleInterjection(ij)
 		case <-pw.runStatus.Done():
 			log.Debugf("Closing worker for %+v", pw.topicPartition)
 			pw.stopSignal <- struct{}{}
@@ -137,6 +141,9 @@ func (pw *partitionWorker[T]) pushRecords() {
 }
 
 func (pw *partitionWorker[T]) scheduleTxnAndExecution(records []*kgo.Record) {
+	if pw.isRevoked() {
+		return
+	}
 	pw.revocationWaiter.Add(len(records)) // optimistically do one add call
 	for _, record := range records {
 		if record != nil && record.Offset >= pw.highestOffset {
@@ -146,7 +153,31 @@ func (pw *partitionWorker[T]) scheduleTxnAndExecution(records []*kgo.Record) {
 		} else {
 			pw.revocationWaiter.Done() // in the rare occasion this is a stale evetn, decrement the revocation waiter
 		}
+		// this is needed as, when under load, the record input may starve out interjections
+		// which have a very small input buffer
+		pw.interleaveInterjection()
 	}
+}
+
+func (pw *partitionWorker[T]) interleaveInterjection() {
+	select {
+	case ij := <-pw.interjectionInput:
+		pw.scheduleInterjection(ij)
+	default:
+	}
+}
+
+func (pw *partitionWorker[T]) scheduleInterjection(inter *interjection[T]) {
+	if pw.isRevoked() {
+		if inter.callback != nil {
+			inter.callback()
+		}
+		return
+	}
+	pw.revocationWaiter.Add(1)
+	ec := newInterjectionContext(pw.runStatus.Ctx(), inter, pw.topicPartition, pw.changeLog.changeLogData(), pw)
+	pw.eosProducer.addEventContext(ec)
+	pw.interjectionEventInput <- ec
 }
 
 func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(), commitLog *eosCommitLog) {
@@ -160,17 +191,16 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	log.Debugf("partitionWorker activated %+v in %v, interjectionCount: %d", pw.topicPartition, elapsed, len(interjections))
 	ijPtrs := sak.ToPtrSlice(interjections)
 	for _, ij := range ijPtrs {
-		ij.init(pw.topicPartition, pw.interjectionChannel)
+		ij.init(pw.topicPartition, pw.interjectionInput)
 		ij.tick()
 	}
 	pw.eventSource.source.onPartitionActivated(pw.topicPartition.Partition)
 	for {
 		select {
 		case ec := <-pw.eventInput:
-			// if ec != nil {
-			// ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
 			pw.handleEvent(ec)
-			// }
+		case ec := <-pw.interjectionEventInput:
+			pw.handleInterjection(ec)
 		case job := <-pw.asyncCompleter.asyncJobs:
 			// TODO: if the partition was reject and we have not tried to produce yet
 			// drop this event. This is tricky because we need to know if we are buffered or not
@@ -181,9 +211,6 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 			case pw.asyncCompleter.asyncFullReply <- struct{}{}:
 			default:
 			}
-		case ij := <-pw.interjectionChannel:
-			pw.handleInterjection(ij)
-			ij.tick()
 		case <-pw.stopSignal:
 			for _, ij := range ijPtrs {
 				ij.cancel()
@@ -215,6 +242,7 @@ func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
 	for {
 		select {
 		case ac.asyncJobs <- j:
+			log.Tracef("Async transferred")
 			return
 		default:
 			log.Tracef("Async completion channel full, you're incoming events are significantly outpacing your async processes.")
@@ -227,22 +255,14 @@ func (pw *partitionWorker[T]) isRevoked() bool {
 	return !pw.runStatus.Running()
 }
 
-func (pw *partitionWorker[T]) handleInterjection(inter *interjection[T]) {
-	// // TODO: how to cancel one off interjections during a revocation?
-	if pw.isRevoked() {
-		if inter.callback != nil {
-			inter.callback()
-		}
-		return
-	}
-	pw.revocationWaiter.Add(1)
-	ec := newInterjectionContext(pw.runStatus.Ctx(), pw.topicPartition, pw.changeLog.changeLogData(), pw)
-	pw.eosProducer.addInterjection(ec)
+func (pw *partitionWorker[T]) handleInterjection(ec *EventContext[T]) {
+	inter := ec.interjection
 	ec.producer = <-ec.producerChan
 	if ec.producer == nil && inter.callback != nil {
 		inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
 	} else if ec.producer != nil && inter.interject(ec) == Complete {
 		ec.complete()
+		inter.tick()
 	}
 }
 

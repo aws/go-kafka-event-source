@@ -24,7 +24,7 @@ import (
 	"github.com/aws/go-kafka-event-source/streams/sak"
 )
 
-type asyncJobContainer[S StateStore, K comparable, V any] struct {
+type asyncJobContainer[S any, K comparable, V any] struct {
 	eventContext *EventContext[S]
 	finalizer    AsyncJobFinalizer[S, K, V]
 	key          K
@@ -40,9 +40,9 @@ func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() (ExecutionState, error) 
 type AsyncJobProcessor[K comparable, V any] func(K, V) error
 
 // A callback invoked when a previously scheduled AsyncJob has been completed.
-type AsyncJobFinalizer[T StateStore, K comparable, V any] func(*EventContext[T], K, V, error) (ExecutionState, error)
+type AsyncJobFinalizer[T any, K comparable, V any] func(*EventContext[T], K, V, error) (ExecutionState, error)
 
-type worker[S StateStore, K comparable, V any] struct {
+type worker[S any, K comparable, V any] struct {
 	capacity  int
 	workQueue *asyncItemQueue[asyncJobContainer[S, K, V]]
 	processor AsyncJobProcessor[K, V]
@@ -352,9 +352,9 @@ func (ap *AsyncJobScheduler[S, K, V]) workerAvailable() {
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) enqueueWorker(w *worker[S, K, V]) {
-	if ap.isClosed() {
-		return
-	}
+	// if ap.isClosed() {
+	// 	return
+	// }
 	ap.updateRWLock.RLock()
 	ap.workerChannel <- w
 	ap.updateRWLock.RUnlock()
@@ -369,9 +369,9 @@ func (ap *AsyncJobScheduler[S, K, V]) warmup() {
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) releaseWorker(w *worker[S, K, V]) {
-	if ap.isClosed() {
-		return
-	}
+	// if ap.isClosed() {
+	// 	return
+	// }
 	ap.mux.Lock()
 	if w.workQueue.done() {
 		delete(ap.workerMap, w.key)
