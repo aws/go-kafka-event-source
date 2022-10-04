@@ -117,6 +117,18 @@ func ToStructSlice[T any](ptrs []*T) []T {
 	return pointers
 }
 
+// A utility function that copies a map[K]T.
+// Useful when you need to iterate over items in a map that is synchronized buy a Mutex.
+// Used internally but exposed for your consumption.
+func MapCopy[K comparable, T any](m map[K]T) map[K]T {
+	c := make(map[K]T, len(m))
+
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
 // A utility function that extracts all values from a map[K]T.
 // Useful when you need to iterate over items in a map that is synchronized buy a Mutex.
 // Used internally but exposed for your consumption.

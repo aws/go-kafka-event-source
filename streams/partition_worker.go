@@ -54,11 +54,12 @@ type partitionWorker[T StateStore] struct {
 	changeLog              changeLogPartition[T]
 	eventSource            *EventSource[T]
 	runStatus              sak.RunStatus
-	pending                int64
-	processed              int64
-	highestOffset          int64
-	topicPartition         TopicPartition
-	revocationWaiter       sync.WaitGroup
+	ready                  int64
+	// pending                int64
+	// processed              int64
+	highestOffset    int64
+	topicPartition   TopicPartition
+	revocationWaiter sync.WaitGroup
 }
 
 func newPartitionWorker[T StateStore](
@@ -85,7 +86,7 @@ func newPartitionWorker[T StateStore](
 			asyncJobs:      make(chan asyncJob[T], asyncSize),
 			asyncFullReply: make(chan struct{}, 1),
 		},
-		partitionInput:         make(chan []*kgo.Record, 128),
+		partitionInput:         make(chan []*kgo.Record, 4),
 		eventInput:             make(chan *EventContext[T], recordsInputSize),
 		interjectionInput:      make(chan *interjection[T], 1),
 		interjectionEventInput: make(chan *EventContext[T], 1),
@@ -97,12 +98,16 @@ func newPartitionWorker[T StateStore](
 
 	return pw
 }
+func (pw *partitionWorker[T]) canInterject() bool {
+	return atomic.LoadInt64(&pw.ready) != 0
+}
 
 func (pw *partitionWorker[T]) add(records []*kgo.Record) {
 	if pw.isRevoked() {
 		return
 	}
-	atomic.AddInt64(&pw.pending, int64(len(records)))
+
+	// atomic.AddInt64(&pw.pending, int64(len(records)))
 	pw.partitionInput <- records
 }
 
@@ -182,12 +187,24 @@ func (pw *partitionWorker[T]) scheduleInterjection(inter *interjection[T]) {
 
 func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(), commitLog *eosCommitLog) {
 	elapsed := sincer{time.Now()}
+	// the partition is not ready to receive events as it is still bootstrapping the state store.
+	// in the case where this partition was assigned due to a failure on another consumer, this could be a lengthy process
+	// if we continue to consume events for this partition, we will fill it's input buffer
+	// and block other partitions on this consumer. pause the partition until tghe state store is bootstrapped
+	pw.eventSource.consumer.Client().PauseFetchPartitions(map[string][]int32{
+		pw.topicPartition.Topic: {pw.topicPartition.Partition},
+	})
 	// don't start consuming until this function returns
 	// this function will block until all changelogs for this partition are populated
 	pw.highestOffset = commitLog.lastProcessed(pw.topicPartition)
 	log.Debugf("partitionWorker initialized %+v with lastProcessed offset: %d in %v", pw.topicPartition, pw.highestOffset, elapsed)
 	waiter()
+	pw.eventSource.consumer.Client().ResumeFetchPartitions(map[string][]int32{
+		pw.topicPartition.Topic: {pw.topicPartition.Partition},
+	})
+	// resume partition if it was paused
 	go pw.pushRecords()
+	atomic.StoreInt64(&pw.ready, 1)
 	log.Debugf("partitionWorker activated %+v in %v, interjectionCount: %d", pw.topicPartition, elapsed, len(interjections))
 	ijPtrs := sak.ToPtrSlice(interjections)
 	for _, ij := range ijPtrs {
@@ -268,10 +285,10 @@ func (pw *partitionWorker[T]) handleInterjection(ec *EventContext[T]) {
 
 func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
 	offset := ec.Offset()
-	atomic.AddInt64(&pw.pending, -1)
+	// atomic.AddInt64(&pw.pending, -1)
 	pw.forwardToEventSource(ec)
 	pw.highestOffset = offset + 1
-	atomic.AddInt64(&pw.processed, 1)
+	// atomic.AddInt64(&pw.processed, 1)
 	return true
 }
 

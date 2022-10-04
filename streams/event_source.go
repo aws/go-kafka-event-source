@@ -16,6 +16,7 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"sync"
@@ -25,6 +26,9 @@ import (
 	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
+
+var ErrPartitionNotAssigned = errors.New("partition is not assigned")
+var ErrPartitionNotReady = errors.New("partition is not ready")
 
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
@@ -277,10 +281,10 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 	})
 }
 
-// Executes `cmd` in the context of the given TopicPartition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
+// Executes `cmd` in the context of the given partition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
 // `callback` is used interally to make InterjectAll a blocking call. `callback` may or may not be useful depending on your use case.
-func (es *EventSource[T]) Interject(tp TopicPartition, cmd Interjector[T], callback func()) {
-	es.consumer.interject(tp.Partition, cmd, callback)
+func (es *EventSource[T]) Interject(partition int32, cmd Interjector[T], callback func()) <-chan error {
+	return es.consumer.interject(partition, cmd)
 }
 
 /*

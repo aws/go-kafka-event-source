@@ -288,28 +288,32 @@ func (sc *eventSourceConsumer[T]) start() {
 }
 
 // Inserts the interjection into the appropriate partition workers interjectionChannel. Returns immediately if the partiotns is not currently assigned.
-func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T], callback func()) {
+func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T]) <-chan error {
 	sc.workerMux.Lock()
+	defer sc.workerMux.Unlock()
+	c := make(chan error, 1)
 	w := sc.workers[partition]
-	sc.workerMux.Unlock()
 	if w == nil {
-		if callback != nil {
-			callback()
-		}
-		return
+		c <- ErrPartitionNotAssigned
+		return c
+	}
+	if !w.canInterject() {
+		c <- ErrPartitionNotAssigned
+		return c
 	}
 	w.interjectionInput <- &interjection[T]{
 		isOneOff:       true,
 		topicPartition: w.topicPartition,
 		interjector: func(ec *EventContext[T], t time.Time) ExecutionState {
 			state := cmd(ec, t)
-			if callback != nil {
-				callback()
-			}
+			// if callback != nil {
+			// 	callback()
+			// }
+			close(c)
 			return state
 		},
-		callback: callback,
 	}
+	return c
 }
 
 // A convenience function which allows you to Interject into every active partition assigned to the consumer
@@ -318,27 +322,24 @@ func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T],
 // Useful for gathering store statistics, but can be used in place of a standard Interjection.
 func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionSync(interjector Interjector[T]) {
 	sc.workerMux.Lock()
-	tps := sak.MapKeysToSlice(sc.workers)
+	ps := sak.MapKeysToSlice(sc.workers)
 	sc.workerMux.Unlock()
-
-	for _, tp := range tps {
-		wg := sync.WaitGroup{}
-		wg.Add(1)
-		sc.interject(tp, interjector, wg.Done)
-		wg.Wait()
+	for _, p := range ps {
+		<-sc.interject(p, interjector)
 	}
 }
 
 func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionAsync(interjector Interjector[T]) {
 	sc.workerMux.Lock()
-	tps := sak.MapKeysToSlice(sc.workers)
+	ps := sak.MapKeysToSlice(sc.workers)
 	sc.workerMux.Unlock()
-	wg := &sync.WaitGroup{}
-	wg.Add(len(tps))
-	for _, tp := range tps {
-		sc.interject(tp, interjector, wg.Done)
+	chans := make([]<-chan error, len(ps))
+	for _, p := range ps {
+		chans = append(chans, sc.interject(p, interjector))
 	}
-	wg.Wait()
+	for _, c := range chans {
+		<-c
+	}
 }
 
 // TODO: This needs some more work after we provide balancer configuration.

@@ -39,7 +39,6 @@ type EventContext[T any] struct {
 	done             chan struct{}
 	topicPartition   TopicPartition
 	interjection     *interjection[T]
-	isInterjection   bool
 }
 
 func (ec *EventContext[T]) isRevoked() bool {
@@ -48,12 +47,12 @@ func (ec *EventContext[T]) isRevoked() bool {
 
 // Returns true if this EventContext represents an Interjection
 func (ec *EventContext[T]) IsInterjection() bool {
-	return ec.isInterjection
+	return ec.interjection != nil
 }
 
 // The offset for this event, -1 for an Interjection
 func (ec *EventContext[T]) Offset() int64 {
-	if ec.isInterjection {
+	if ec.IsInterjection() {
 		return -1
 	}
 	return ec.input.Offset()
@@ -107,7 +106,7 @@ func (ec *EventContext[T]) AsyncJobComplete(finalize func() (ExecutionState, err
 
 // Return the raw input record for this event or an uninitialized record and false if the EventContect represents an Interjections
 func (ec *EventContext[T]) Input() (IncomingRecord, bool) {
-	return ec.input, !ec.isInterjection
+	return ec.input, !ec.IsInterjection()
 }
 
 // Returns the StateStore for this event/TopicPartition
@@ -116,7 +115,6 @@ func (ec *EventContext[T]) Store() T {
 }
 
 func (ec *EventContext[T]) complete() {
-	// ec.wg.Done()
 	close(ec.done)
 }
 
@@ -128,11 +126,10 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 		topicPartition:   input.TopicPartition(),
 		changeLog:        changeLog,
 		input:            input,
-		isInterjection:   false,
+		interjection:     nil,
 		asynCompleter:    pw.asyncCompleter,
 		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
 		done:             make(chan struct{}),
-		// pendingRecords: pendingRecordPool.Borrow(),
 	}
 	return ec
 }
@@ -143,12 +140,10 @@ func newInterjectionContext[T StateStore](ctx context.Context, interjection *int
 		producerChan:     make(chan *producerNode[T], 1),
 		topicPartition:   topicPartition,
 		interjection:     interjection,
-		isInterjection:   true,
 		changeLog:        changeLog,
 		asynCompleter:    pw.asyncCompleter,
 		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
 		done:             make(chan struct{}),
-		// pendingRecords: pendingRecordPool.Borrow(),
 	}
 	return ec
 }
