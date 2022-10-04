@@ -36,7 +36,7 @@ func TestAsyncBatchOrdering(t *testing.T) {
 
 	executionCount := int64(0)
 	lastProcessed := int64(-1)
-	executor := func(batch []BatchItem[int, int64]) {
+	executor := func(batch []*BatchItem[int, int64]) {
 		if atomic.AddInt64(&executionCount, 1) == 1 {
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -46,9 +46,11 @@ func TestAsyncBatchOrdering(t *testing.T) {
 		for _, batchItem := range batch {
 			value := batchItem.Value
 			oldValue := atomic.SwapInt64(&lastProcessed, value)
+			batchItem.UserData = -value
 			if value-1 != oldValue {
 				t.Errorf("incorrect ordering of async batcher. actual %d, exepected %d", value, oldValue+1)
 			}
+
 		}
 	}
 	batcher := NewAsyncBatcher[*IntStore](nil, executor, 10, 10, 0)
@@ -62,5 +64,12 @@ func TestAsyncBatchOrdering(t *testing.T) {
 
 	if executionCount != 2 {
 		t.Errorf("all batches did not execute")
+	}
+
+	for _, item := range batch.Items {
+		userData := item.UserData.(int64)
+		if item.Value+userData != 0 {
+			t.Errorf("invalid userdata: %v, %v", userData, item.Value)
+		}
 	}
 }

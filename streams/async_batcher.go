@@ -24,13 +24,15 @@ import (
 )
 
 type BatchItem[K comparable, V any] struct {
-	batch unsafe.Pointer
-	Key   K
-	Value V
+	batch    unsafe.Pointer
+	Key      K
+	Value    V
+	Err      error
+	UserData any
 }
 
-func batchFor[S any, K comparable, V any](bi BatchItem[K, V]) *Batch[S, K, V] {
-	return (*Batch[S, K, V])(bi.batch)
+func batchFor[S any, K comparable, V any](ptr unsafe.Pointer) *Batch[S, K, V] {
+	return (*Batch[S, K, V])(ptr)
 }
 
 type Batch[S any, K comparable, V any] struct {
@@ -72,7 +74,7 @@ func (b *Batch[S, K, V]) AddKeyValue(key K, value V) *Batch[S, K, V] {
 	return b
 }
 
-type BatchExecutor[K comparable, V any] func(batch []BatchItem[K, V])
+type BatchExecutor[K comparable, V any] func(batch []*BatchItem[K, V])
 
 type asyncBatchState int
 
@@ -82,20 +84,19 @@ const (
 )
 
 type asyncBatch[K comparable, V any] struct {
-	items      []BatchItem[K, V]
+	items      []*BatchItem[K, V]
 	state      asyncBatchState
 	flushTimer *time.Timer
 }
 
-func (b *asyncBatch[K, V]) add(item BatchItem[K, V]) {
+func (b *asyncBatch[K, V]) add(item *BatchItem[K, V]) {
 	b.items = append(b.items, item)
 }
 
 func (b *asyncBatch[K, V]) reset(assignments map[K]*asyncBatch[K, V]) {
-	var empty BatchItem[K, V]
 	for i, item := range b.items {
 		delete(assignments, item.Key)
-		b.items[i] = empty
+		b.items[i] = nil
 	}
 	b.items = b.items[0:0]
 	b.state = batcherReady
@@ -104,7 +105,7 @@ func (b *asyncBatch[K, V]) reset(assignments map[K]*asyncBatch[K, V]) {
 type AsyncBatcher[S any, K comparable, V any] struct {
 	batches        []*asyncBatch[K, V]
 	assignments    map[K]*asyncBatch[K, V]
-	pendingItems   *sak.List[BatchItem[K, V]]
+	pendingItems   *sak.List[*BatchItem[K, V]]
 	executor       BatchExecutor[K, V]
 	executingCount int
 	MaxBatchSize   int
@@ -116,7 +117,7 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 	batches := make([]*asyncBatch[K, V], maxConcurrentBatches)
 	for i := range batches {
 		batches[i] = &asyncBatch[K, V]{
-			items: make([]BatchItem[K, V], 0, maxBatchSize),
+			items: make([]*BatchItem[K, V], 0, maxBatchSize),
 		}
 	}
 
@@ -126,7 +127,7 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 	return &AsyncBatcher[S, K, V]{
 		executor:     executor,
 		assignments:  make(map[K]*asyncBatch[K, V]),
-		pendingItems: sak.NewList[BatchItem[K, V]](),
+		pendingItems: sak.NewList[*BatchItem[K, V]](),
 		batches:      batches,
 		MaxBatchSize: maxBatchSize,
 		BatchDelay:   sak.Abs(delay),
@@ -134,12 +135,12 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 }
 
 func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) {
-	for _, item := range batch.Items {
-		ab.add(item)
+	for i := range batch.Items {
+		ab.add((*BatchItem[K, V])(sak.Noescape(unsafe.Pointer(&batch.Items[i]))))
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[K, V]) {
+func (ab *AsyncBatcher[S, K, V]) add(bi *BatchItem[K, V]) {
 	ab.mux.Lock()
 	if batch := ab.batchFor(bi); batch != nil {
 		ab.addToBatch(bi, batch)
@@ -149,7 +150,7 @@ func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[K, V]) {
 	ab.mux.Unlock()
 }
 
-func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[K, V]) *asyncBatch[K, V] {
+func (ab *AsyncBatcher[S, K, V]) batchFor(item *BatchItem[K, V]) *asyncBatch[K, V] {
 	if batch, ok := ab.assignments[item.Key]; ok && batch.state == batcherReady {
 		return batch
 	} else if ok {
@@ -164,7 +165,7 @@ func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[K, V]) *asyncBatch[K, V
 	return nil
 }
 
-func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[K, V], batch *asyncBatch[K, V]) {
+func (ab *AsyncBatcher[S, K, V]) addToBatch(item *BatchItem[K, V], batch *asyncBatch[K, V]) {
 	ab.assignments[item.Key] = batch
 	batch.add(item)
 
@@ -195,7 +196,7 @@ func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[K, 
 func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[K, V]) {
 	ab.executor(batch.items)
 	for _, item := range batch.items {
-		batchFor[S](item).completeItem()
+		batchFor[S, K, V](item.batch).completeItem()
 	}
 	ab.mux.Lock()
 	ab.executingCount--
