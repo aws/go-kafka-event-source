@@ -42,6 +42,18 @@ type Number interface {
 	Signed | Unsigned | Float
 }
 
+type SignedNumber interface {
+	Signed | Float
+}
+
+// A generic version of math.Abs.
+func Abs[T SignedNumber](a T) T {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
 // A generic version of math.Min.
 func Min[T Number](a, b T) T {
 	if a < b {

@@ -21,6 +21,9 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/aws/go-kafka-event-source/streams/sak"
+	"github.com/google/btree"
 )
 
 const kafkaProgramScript = "kafka_local/exec-kafka-script.sh"
@@ -75,4 +78,37 @@ func TestMain(m *testing.M) {
 
 func kafkaScriptCommand(program, command string) *exec.Cmd {
 	return exec.Command("sh", kafkaProgramScript, kafkaWorkingDir, program, command)
+}
+
+type IntStoreItem struct {
+	Key, Value int
+}
+
+func IntStoreItemLess(a, b IntStoreItem) bool {
+	return a.Key < b.Key
+}
+
+type IntStore btree.BTreeG[IntStoreItem]
+
+func NewIntStore() *IntStore {
+	return (*IntStore)(btree.NewG(64, IntStoreItemLess))
+}
+
+func (s *IntStore) ReceiveChange(r IncomingRecord) error {
+	tree := (*btree.BTreeG[IntStoreItem])(s)
+	key := sak.Must(IntCodec.Decode(r.Key()))
+	if len(r.Value()) > 0 {
+		tree.ReplaceOrInsert(IntStoreItem{
+			Key:   key,
+			Value: sak.Must(IntCodec.Decode(r.Value())),
+		})
+	} else {
+		tree.Delete(IntStoreItem{Key: key})
+	}
+	return nil
+}
+
+func (s *IntStore) Revoked() {
+	tree := (*btree.BTreeG[IntStoreItem])(s)
+	tree.Clear(false)
 }

@@ -16,26 +16,63 @@ package streams
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
 )
 
-type BatchItem[S any, K comparable, V any] struct {
-	EventContext *EventContext[S]
-	Key          K
-	Item         V
+type BatchItem[K comparable, V any] struct {
+	batch unsafe.Pointer
+	Key   K
+	Value V
 }
 
-func NewBatchItem[S any, K comparable, V any](ec *EventContext[S], key K, item V) BatchItem[S, K, V] {
-	return BatchItem[S, K, V]{
+func batchFor[S any, K comparable, V any](bi BatchItem[K, V]) *Batch[S, K, V] {
+	return (*Batch[S, K, V])(bi.batch)
+}
+
+type Batch[S any, K comparable, V any] struct {
+	EventContext *EventContext[S]
+	Items        []BatchItem[K, V]
+	callback     func(*Batch[S, K, V])
+	completed    int64
+}
+
+func NewBatch[S any, K comparable, V any](ec *EventContext[S], cb func(*Batch[S, K, V])) *Batch[S, K, V] {
+	return &Batch[S, K, V]{
 		EventContext: ec,
-		Key:          key,
-		Item:         item,
+		callback:     cb,
 	}
 }
 
-type BatchExecutor[S any, K comparable, V any] func(batch []BatchItem[S, K, V])
+func (b *Batch[S, K, V]) completeItem() {
+	if atomic.AddInt64(&b.completed, 1) == int64(len(b.Items)) {
+		if b.callback != nil {
+			b.callback(b)
+		} else {
+			b.EventContext.AsyncJobComplete(func() (ExecutionState, error) {
+				return Complete, nil
+			})
+		}
+	}
+}
+
+func (b *Batch[S, K, V]) Add(items ...BatchItem[K, V]) *Batch[S, K, V] {
+	for i := range items {
+		items[i].batch = unsafe.Pointer(b)
+	}
+	b.Items = append(b.Items, items...)
+	return b
+}
+
+func (b *Batch[S, K, V]) AddKeyValue(key K, value V) *Batch[S, K, V] {
+	b.Items = append(b.Items, BatchItem[K, V]{batch: unsafe.Pointer(b), Key: key, Value: value})
+	return b
+}
+
+type BatchExecutor[K comparable, V any] func(batch []BatchItem[K, V])
 
 type asyncBatchState int
 
@@ -44,18 +81,18 @@ const (
 	batcherExecuting
 )
 
-type asyncBatch[S any, K comparable, V any] struct {
-	items      []BatchItem[S, K, V]
+type asyncBatch[K comparable, V any] struct {
+	items      []BatchItem[K, V]
 	state      asyncBatchState
 	flushTimer *time.Timer
 }
 
-func (b *asyncBatch[S, K, V]) add(item BatchItem[S, K, V]) {
+func (b *asyncBatch[K, V]) add(item BatchItem[K, V]) {
 	b.items = append(b.items, item)
 }
 
-func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
-	var empty BatchItem[S, K, V]
+func (b *asyncBatch[K, V]) reset(assignments map[K]*asyncBatch[K, V]) {
+	var empty BatchItem[K, V]
 	for i, item := range b.items {
 		delete(assignments, item.Key)
 		b.items[i] = empty
@@ -65,54 +102,44 @@ func (b *asyncBatch[S, K, V]) reset(assignments map[K]*asyncBatch[S, K, V]) {
 }
 
 type AsyncBatcher[S any, K comparable, V any] struct {
-	batches        []*asyncBatch[S, K, V]
-	assignments    map[K]*asyncBatch[S, K, V]
-	pendingItems   *sak.List[BatchItem[S, K, V]]
-	executor       BatchExecutor[S, K, V]
+	batches        []*asyncBatch[K, V]
+	assignments    map[K]*asyncBatch[K, V]
+	pendingItems   *sak.List[BatchItem[K, V]]
+	executor       BatchExecutor[K, V]
 	executingCount int
 	MaxBatchSize   int
-	// MinBatchSize   int
-	BatchDelay time.Duration
-	mux        sync.Mutex
+	BatchDelay     time.Duration
+	mux            sync.Mutex
 }
 
-func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[S, K, V], maxBatchSize, maxConcurrentBatches int) *AsyncBatcher[S, K, V] {
-	batches := make([]*asyncBatch[S, K, V], maxConcurrentBatches)
+func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[K, V], maxBatchSize, maxConcurrentBatches int, delay time.Duration) *AsyncBatcher[S, K, V] {
+	batches := make([]*asyncBatch[K, V], maxConcurrentBatches)
 	for i := range batches {
-		batches[i] = &asyncBatch[S, K, V]{
-			items: make([]BatchItem[S, K, V], 0, maxBatchSize),
+		batches[i] = &asyncBatch[K, V]{
+			items: make([]BatchItem[K, V], 0, maxBatchSize),
 		}
+	}
+
+	if delay == 0 {
+		delay = time.Millisecond * 5
 	}
 	return &AsyncBatcher[S, K, V]{
 		executor:     executor,
-		assignments:  make(map[K]*asyncBatch[S, K, V]),
-		pendingItems: sak.NewList[BatchItem[S, K, V]](),
+		assignments:  make(map[K]*asyncBatch[K, V]),
+		pendingItems: sak.NewList[BatchItem[K, V]](),
 		batches:      batches,
 		MaxBatchSize: maxBatchSize,
-		// MinBatchSize: minBatchSize,
-		BatchDelay: time.Millisecond * 5,
+		BatchDelay:   sak.Abs(delay),
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) Add(ec *EventContext[S], key K, item V) {
-	ab.add(NewBatchItem(ec, key, item))
-}
-
-func (ab *AsyncBatcher[S, K, V]) AddItems(items ...BatchItem[S, K, V]) {
-	for _, bi := range items {
-		ab.add(bi)
+func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) {
+	for _, item := range batch.Items {
+		ab.add(item)
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) CompleteItems(items ...BatchItem[S, K, V]) {
-	for _, bi := range items {
-		bi.EventContext.AsyncJobComplete(func() (ExecutionState, error) {
-			return Complete, nil
-		})
-	}
-}
-
-func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[S, K, V]) {
+func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[K, V]) {
 	ab.mux.Lock()
 	if batch := ab.batchFor(bi); batch != nil {
 		ab.addToBatch(bi, batch)
@@ -122,7 +149,7 @@ func (ab *AsyncBatcher[S, K, V]) add(bi BatchItem[S, K, V]) {
 	ab.mux.Unlock()
 }
 
-func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[S, K, V]) *asyncBatch[S, K, V] {
+func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[K, V]) *asyncBatch[K, V] {
 	if batch, ok := ab.assignments[item.Key]; ok && batch.state == batcherReady {
 		return batch
 	} else if ok {
@@ -137,7 +164,7 @@ func (ab *AsyncBatcher[S, K, V]) batchFor(item BatchItem[S, K, V]) *asyncBatch[S
 	return nil
 }
 
-func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[S, K, V], batch *asyncBatch[S, K, V]) {
+func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[K, V], batch *asyncBatch[K, V]) {
 	ab.assignments[item.Key] = batch
 	batch.add(item)
 
@@ -153,7 +180,7 @@ func (ab *AsyncBatcher[S, K, V]) addToBatch(item BatchItem[S, K, V], batch *asyn
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[S, K, V]) {
+func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[K, V]) {
 	if batch.state == batcherReady {
 		batch.state = batcherExecuting
 		ab.executingCount++
@@ -165,8 +192,11 @@ func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[S, 
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[S, K, V]) {
+func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[K, V]) {
 	ab.executor(batch.items)
+	for _, item := range batch.items {
+		batchFor[S](item).completeItem()
+	}
 	ab.mux.Lock()
 	ab.executingCount--
 	// TODO: handle errors right here as this may effect other batches

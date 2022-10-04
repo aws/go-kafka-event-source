@@ -17,6 +17,7 @@ package streams
 import (
 	"bytes"
 
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -62,6 +63,21 @@ func JsonChangeLogEntryEncoder[T any](entryType string, item T) ChangeLogEntry {
 	codec.Encode(cle.ValueWriter(), item)
 	return cle
 }
+
+type intCodec[T sak.Signed] struct{}
+
+func (intCodec[T]) Encode(b *bytes.Buffer, i T) error {
+	writeSignedIntToByteArray(i, b)
+	return nil
+}
+
+func (intCodec[T]) Decode(b []byte) (T, error) {
+	return readIntegerFromByteArray[T](b), nil
+}
+
+var IntCodec = intCodec[int]{}
+var Int64Codec = intCodec[int64]{}
+var Int32Codec = intCodec[int32]{}
 
 // A generic JSON en/decoder. =
 // Uses "github.com/json-iterator/go".ConfigCompatibleWithStandardLibrary for en/decoding JSON in a perforamnt way
