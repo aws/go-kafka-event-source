@@ -41,9 +41,23 @@ const (
 	unknownType ExecutionState = 3
 )
 
+type asyncJob[T any] struct {
+	ctx      *EventContext[T]
+	finalize func() ExecutionState
+}
+
+type asyncCompleter[T any] struct {
+	asyncJobs chan asyncJob[T]
+}
+
+func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
+	ac.asyncJobs <- j
+}
+
 type partitionWorker[T StateStore] struct {
 	eosProducer            *eosProducerPool[T]
 	partitionInput         chan []*kgo.Record
+	maxPending             chan struct{}
 	interjectionInput      chan *interjection[T]
 	eventInput             chan *EventContext[T]
 	interjectionEventInput chan *EventContext[T]
@@ -55,13 +69,9 @@ type partitionWorker[T StateStore] struct {
 	eventSource            *EventSource[T]
 	runStatus              sak.RunStatus
 	ready                  int64
-	// pending                int64
-	// processed              int64
-	highestOffset    int64
-	topicPartition   TopicPartition
-	revocationWaiter sync.WaitGroup
-	// completions      []asyncJob[T]
-	// completionLock   sync.Mutex
+	highestOffset          int64
+	topicPartition         TopicPartition
+	revocationWaiter       sync.WaitGroup
 }
 
 func newPartitionWorker[T StateStore](
@@ -84,9 +94,9 @@ func newPartitionWorker[T StateStore](
 		stopSignal:     make(chan struct{}),
 		revokedSignal:  make(chan struct{}, 1),
 		stopped:        make(chan struct{}),
+		maxPending:     make(chan struct{}, eosProducer.maxPendingItems()),
 		asyncCompleter: asyncCompleter[T]{
 			asyncJobs: make(chan asyncJob[T], asyncSize),
-			// asyncFullReply: make(chan struct{}, 1),
 		},
 		partitionInput:         make(chan []*kgo.Record, 4),
 		eventInput:             make(chan *EventContext[T], recordsInputSize),
@@ -150,10 +160,12 @@ func (pw *partitionWorker[T]) scheduleTxnAndExecution(records []*kgo.Record) {
 	if pw.isRevoked() {
 		return
 	}
+
 	pw.revocationWaiter.Add(len(records)) // optimistically do one add call
 	for _, record := range records {
 		if record != nil && record.Offset >= pw.highestOffset {
 			ec := newEventContext(pw.runStatus.Ctx(), record, pw.changeLog.changeLogData(), pw)
+			pw.maxPending <- struct{}{}
 			pw.eosProducer.addEventContext(ec)
 			pw.eventInput <- ec
 		} else {
@@ -182,6 +194,7 @@ func (pw *partitionWorker[T]) scheduleInterjection(inter *interjection[T]) {
 	}
 	pw.revocationWaiter.Add(1)
 	ec := newInterjectionContext(pw.runStatus.Ctx(), inter, pw.topicPartition, pw.changeLog.changeLogData(), pw)
+	pw.maxPending <- struct{}{}
 	pw.eosProducer.addEventContext(ec)
 	pw.interjectionEventInput <- ec
 }
@@ -238,23 +251,10 @@ func (pw *partitionWorker[T]) waitForRevocation() {
 	pw.revokedSignal <- struct{}{}
 }
 
-type asyncCompleter[T any] struct {
-	asyncJobs chan asyncJob[T]
-	// asyncFullReply chan struct{}
-}
-
-type asyncJob[T any] struct {
-	ctx      *EventContext[T]
-	finalize func() ExecutionState
-}
-
-func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
-	ac.asyncJobs <- j
-}
-
 func (pw *partitionWorker[T]) processAsyncJob(job asyncJob[T]) {
 	if job.finalize() == Complete {
 		job.ctx.complete()
+		<-pw.maxPending
 	}
 }
 
@@ -265,20 +265,20 @@ func (pw *partitionWorker[T]) isRevoked() bool {
 func (pw *partitionWorker[T]) handleInterjection(ec *EventContext[T]) {
 	inter := ec.interjection
 	pw.assignProducer(ec)
-	if ec.producer == nil && inter.callback != nil {
-		inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
+	if ec.producer == nil {
+		<-pw.maxPending
+		if inter.callback != nil {
+			inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
+		}
 	} else if ec.producer != nil && inter.interject(ec) == Complete {
 		ec.complete()
+		<-pw.maxPending
 		inter.tick()
 	}
 }
 
 func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
-	offset := ec.Offset()
-	// atomic.AddInt64(&pw.pending, -1)
 	pw.forwardToEventSource(ec)
-	pw.highestOffset = offset + 1
-	// atomic.AddInt64(&pw.processed, 1)
 	return true
 }
 
@@ -300,10 +300,14 @@ func (pw *partitionWorker[T]) forwardToEventSource(ec *EventContext[T]) {
 	pw.assignProducer(ec)
 	if ec.producer == nil {
 		// if we're revoked, don't even add this to the onDeck producer
+		<-pw.maxPending
 		return
 	}
+	offset := ec.Offset()
+	pw.highestOffset = offset + 1
 	record, _ := ec.Input()
 	if pw.eventSource.handleEvent(ec, record) == Complete {
 		ec.complete()
+		<-pw.maxPending
 	}
 }

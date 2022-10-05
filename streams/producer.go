@@ -86,12 +86,12 @@ func (p *Producer) Close() {
 	p.client.Close()
 }
 
-type EventSourceProducer[T any] struct {
+type BatchProducer[S any] struct {
 	client      *kgo.Client
 	destination Destination
 }
 
-func NewEventSourceProducer[T any](destination Destination) *EventSourceProducer[T] {
+func NewBatchProducer[S any](destination Destination) *BatchProducer[S] {
 	client, err := NewClient(
 		destination.Cluster,
 		kgo.ProducerLinger(5*time.Millisecond),
@@ -100,62 +100,70 @@ func NewEventSourceProducer[T any](destination Destination) *EventSourceProducer
 	if err != nil {
 		panic(err)
 	}
-	p := &EventSourceProducer[T]{
+	p := &BatchProducer[S]{
 		client:      client,
 		destination: destination,
 	}
 	return p
 }
 
-type BatchProducerCallback[T any] func(*EventContext[T], []*Record, []error) ExecutionState
+type BatchProducerCallback[S any] func(eventContext *EventContext[S], records []*Record, userData any) ExecutionState
 
-type produceBatcher[T any] struct {
-	ctx      *EventContext[T]
+type produceBatcher[S any] struct {
+	ctx      *EventContext[S]
 	records  []*Record
-	errs     []error
-	callback BatchProducerCallback[T]
 	pending  int64
+	callback BatchProducerCallback[S]
+	userData any
 }
 
-func (b *produceBatcher[T]) Key() TopicPartition {
+func (b *produceBatcher[S]) Key() TopicPartition {
 	return b.ctx.TopicPartition()
 }
 
-func (b *produceBatcher[T]) cleanup() {
+func (b *produceBatcher[S]) cleanup() {
 	for _, r := range b.records {
 		r.Release()
 	}
 	b.records = nil
 }
 
-func (b *produceBatcher[T]) recordComplete(record *kgo.Record, err error) {
-	b.errs = append(b.errs, err)
+func (b *produceBatcher[S]) recordComplete() {
 	if atomic.AddInt64(&b.pending, -1) == 0 && b.callback != nil {
 		b.ctx.AsyncJobComplete(b.executeCallback)
 	}
 }
 
-func (b *produceBatcher[T]) executeCallback() ExecutionState {
-	state := b.callback(b.ctx, b.records, b.errs)
+func (b *produceBatcher[S]) executeCallback() ExecutionState {
+	state := b.callback(b.ctx, b.records, b.userData)
 	b.cleanup()
 	return state
 }
 
-func (p *EventSourceProducer[T]) Produce(ec *EventContext[T], records []*Record, cb BatchProducerCallback[T]) {
-	b := &produceBatcher[T]{
+func (p *BatchProducer[S]) Produce(ec *EventContext[S], records []*Record, cb BatchProducerCallback[S], userData any) ExecutionState {
+	b := &produceBatcher[S]{
 		ctx:      ec,
 		records:  records,
 		callback: cb,
 		pending:  int64(len(records)),
+		userData: userData,
 	}
 	p.produceBatch(b)
+	return Incomplete
 }
 
-func (p *EventSourceProducer[T]) produceBatch(b *produceBatcher[T]) {
+func (p *BatchProducer[S]) produceBatch(b *produceBatcher[S]) {
 	for _, record := range b.records {
 		if len(record.kRecord.Topic) == 0 {
 			record = record.WithTopic(p.destination.DefaultTopic)
 		}
-		p.client.Produce(context.TODO(), record.ToKafkaRecord(), b.recordComplete)
+		p.produceRecord(b, record)
 	}
+}
+
+func (p *BatchProducer[S]) produceRecord(b *produceBatcher[S], record *Record) {
+	p.client.Produce(context.TODO(), record.ToKafkaRecord(), func(kr *kgo.Record, err error) {
+		record.err = err
+		b.recordComplete()
+	})
 }

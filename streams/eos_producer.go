@@ -96,7 +96,7 @@ type eosProducerPool[T StateStore] struct {
 
 func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client, metrics chan Metric) *eosProducerPool[T] {
 	pp := &eosProducerPool[T]{
-		cfg:               DefaultEosConfig,
+		cfg:               cfg,
 		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
 		commitQueue:       make(chan *producerNode[T], cfg.PendingTxnCount),
 		buffer:            make(chan *EventContext[T], 1024),
@@ -135,6 +135,10 @@ func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, c
 // buffer the event context until a producer node is available
 func (pp *eosProducerPool[T]) addEventContext(ec *EventContext[T]) {
 	pp.buffer <- ec
+}
+
+func (pp *eosProducerPool[T]) maxPendingItems() int {
+	return pp.cfg.MaxBatchSize * pp.cfg.PoolSize
 }
 
 func (pp *eosProducerPool[T]) doForwardExecutionContexts(ec *EventContext[T]) {

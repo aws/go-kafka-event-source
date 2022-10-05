@@ -16,6 +16,10 @@ package streams
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
+	"math"
+	"unsafe"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
 	jsoniter "github.com/json-iterator/go"
@@ -78,6 +82,36 @@ func (intCodec[T]) Decode(b []byte) (T, error) {
 var IntCodec = intCodec[int]{}
 var Int64Codec = intCodec[int64]{}
 var Int32Codec = intCodec[int32]{}
+
+var LexoInt64Codec = lexoInt64Codec{}
+
+type lexoInt64Codec struct{}
+
+const lexIntSize = int(unsafe.Sizeof(uint64(1))) + 1
+
+func (lexoInt64Codec) Encode(buf *bytes.Buffer, i int64) error {
+	var b [lexIntSize]byte
+	if i > 0 {
+		b[0] = 1
+		binary.LittleEndian.PutUint64(b[1:], uint64(i))
+	} else {
+		binary.LittleEndian.PutUint64(b[1:], uint64(math.MaxInt64+i))
+	}
+	buf.Write(b[:])
+	return nil
+}
+
+func (lexoInt64Codec) Decode(b []byte) (int64, error) {
+	if len(b) != lexIntSize {
+		return 0, errors.New("invalid lexo integer []byte length")
+	}
+	sign := b[0]
+	val := int64(binary.LittleEndian.Uint64(b[1:]))
+	if sign == 1 {
+		return val, nil
+	}
+	return val - math.MaxInt64, nil
+}
 
 // A generic JSON en/decoder. =
 // Uses "github.com/json-iterator/go".ConfigCompatibleWithStandardLibrary for en/decoding JSON in a perforamnt way

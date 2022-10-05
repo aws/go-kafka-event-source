@@ -46,6 +46,7 @@ type Record struct {
 	valueBuffer *bytes.Buffer
 	kRecord     kgo.Record
 	recordType  string
+	err         error
 }
 
 var recordPool = sak.NewPool(30000,
@@ -72,6 +73,7 @@ var recordPool = sak.NewPool(30000,
 		r.keyBuffer.Reset()
 		r.valueBuffer.Reset()
 		r.recordType = ""
+		r.err = nil
 		return r
 	})
 
@@ -234,6 +236,10 @@ func (r *Record) ToKafkaRecord() *kgo.Record {
 	// to the heap (again). this will significantly ease GC pressure
 	// since we are producing a lot of records
 	return (*kgo.Record)(sak.Noescape(unsafe.Pointer(&r.kRecord)))
+}
+
+func (r *Record) Error() error {
+	return r.err
 }
 
 // A convenience function provided in case you are working with a raw kgo producer

@@ -140,7 +140,10 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 
 func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) ExecutionState {
 	for i := range batch.Items {
-		ab.add(&batch.Items[i])
+		ab.add(
+			// ensure we don't escape to the heap
+			(*BatchItem[K, V])(sak.Noescape(unsafe.Pointer(&batch.Items[i]))),
+		)
 	}
 	return Incomplete
 }
@@ -209,13 +212,16 @@ func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[K, V]) {
 	ab.completeBatchItems(batch.items)
 	ab.mux.Lock()
 	ab.executingCount--
-	// TODO: handle errors right here as this may effect other batches
 	batch.reset(ab.assignments)
 	ab.flushPendingItems()
 	ab.mux.Unlock()
 }
 
 func (ab *AsyncBatcher[S, K, V]) flushPendingItems() {
+	if ab.executingCount == len(ab.batches) {
+		// there are no available batches, no need to continue in this loop
+		return
+	}
 	for el := ab.pendingItems.Front(); el != nil; {
 		if batch := ab.batchFor(el.Value); batch != nil {
 			ab.addToBatch(el.Value, batch)

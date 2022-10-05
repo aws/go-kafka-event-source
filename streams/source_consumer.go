@@ -97,6 +97,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		eosConfig = DefaultEosConfig
 		source.config.EosConfig = eosConfig
 	}
+
 	eosConfig.validate()
 	sc.producerPool = newEOSProducerPool[T](source, cl, eosConfig, client, eventSource.metrics)
 
