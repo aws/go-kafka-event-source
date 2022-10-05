@@ -48,30 +48,30 @@ func (c Contact) Key() string {
 	return c.Id
 }
 
-func createContact(ctx *streams.EventContext[ContactStore], contact Contact) (streams.ExecutionState, error) {
+func createContact(ctx *streams.EventContext[ContactStore], contact Contact) streams.ExecutionState {
 	contactStore := ctx.Store()
 	ctx.RecordChange(contactStore.Put(contact))
 	fmt.Printf("Created contact: %s\n", contact.Id)
-	return streams.Complete, nil
+	return streams.Complete
 }
 
-func deleteContact(ctx *streams.EventContext[ContactStore], contact Contact) (streams.ExecutionState, error) {
+func deleteContact(ctx *streams.EventContext[ContactStore], contact Contact) streams.ExecutionState {
 	contactStore := ctx.Store()
 	if entry, ok := contactStore.Delete(contact); ok {
 		ctx.RecordChange(entry)
 		fmt.Printf("Deleted contact: %s\n", contact.Id)
 	}
-	return streams.Complete, nil
+	return streams.Complete
 }
 
-func notifyContact(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) (streams.ExecutionState, error) {
+func notifyContact(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) streams.ExecutionState {
 	contactStore := ctx.Store()
 	if contact, ok := contactStore.Get(notification.ContactId); ok {
 		fmt.Printf("Notifying contact: %s by %s\n", contact.Id, notification.NotificationType)
 	} else {
 		fmt.Printf("Contact %s does not exist!\n", notification.ContactId)
 	}
-	return streams.Complete, nil
+	return streams.Complete
 }
 
 // simply providing an example of how you might wrap the store into your own type
@@ -85,7 +85,7 @@ func NewContactStore(tp streams.TopicPartition) ContactStore {
 
 var notificationScheduler *streams.AsyncJobScheduler[ContactStore, string, EmailNotification]
 
-func notifyContactAsync(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) (streams.ExecutionState, error) {
+func notifyContactAsync(ctx *streams.EventContext[ContactStore], notification NotifyContactEvent) streams.ExecutionState {
 	contactStore := ctx.Store()
 	if contact, ok := contactStore.Get(notification.ContactId); ok {
 		fmt.Printf("Notifying contact: %s asynchronously by %s\n", contact.Id, notification.NotificationType)
@@ -97,7 +97,7 @@ func notifyContactAsync(ctx *streams.EventContext[ContactStore], notification No
 	} else {
 		fmt.Printf("Contact %s does not exist!\n", notification.ContactId)
 	}
-	return streams.Complete, nil
+	return streams.Complete
 }
 
 func sendEmailToContact(key string, notification EmailNotification) error {
@@ -107,7 +107,7 @@ func sendEmailToContact(key string, notification EmailNotification) error {
 	return nil
 }
 
-func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, email EmailNotification, err error) (streams.ExecutionState, error) {
+func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, email EmailNotification, err error) streams.ExecutionState {
 	// the AsyncJobFinalizer has access to the StateStore associated with this event
 	contactStore := ctx.Store()
 	if contact, ok := contactStore.Get(email.ContactId); ok {
@@ -115,7 +115,7 @@ func emailToContactComplete(ctx *streams.EventContext[ContactStore], _ string, e
 		contact.LastContact = time.Now()
 		contactStore.Put(contact)
 	}
-	return streams.Complete, err
+	return streams.Complete
 }
 
 func ExampleEventSource() {

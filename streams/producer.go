@@ -107,23 +107,19 @@ func NewEventSourceProducer[T any](destination Destination) *EventSourceProducer
 	return p
 }
 
-type BatchCallback[T any] func(*EventContext[T], []*Record, []error) (ExecutionState, error)
+type BatchProducerCallback[T any] func(*EventContext[T], []*Record, []error) ExecutionState
 
 type produceBatcher[T any] struct {
 	ctx      *EventContext[T]
 	records  []*Record
 	errs     []error
-	callback BatchCallback[T]
+	callback BatchProducerCallback[T]
 	pending  int64
 }
 
 func (b *produceBatcher[T]) Key() TopicPartition {
 	return b.ctx.TopicPartition()
 }
-
-// func (b *produceBatcher[T]) Ctx() context.Context {
-// 	return b.ctx.Ctx()
-// }
 
 func (b *produceBatcher[T]) cleanup() {
 	for _, r := range b.records {
@@ -139,13 +135,13 @@ func (b *produceBatcher[T]) recordComplete(record *kgo.Record, err error) {
 	}
 }
 
-func (b *produceBatcher[T]) executeCallback() (ExecutionState, error) {
-	state, err := b.callback(b.ctx, b.records, b.errs)
+func (b *produceBatcher[T]) executeCallback() ExecutionState {
+	state := b.callback(b.ctx, b.records, b.errs)
 	b.cleanup()
-	return state, err
+	return state
 }
 
-func (p *EventSourceProducer[T]) Produce(ec *EventContext[T], records []*Record, cb BatchCallback[T]) {
+func (p *EventSourceProducer[T]) Produce(ec *EventContext[T], records []*Record, cb BatchProducerCallback[T]) {
 	b := &produceBatcher[T]{
 		ctx:      ec,
 		records:  records,

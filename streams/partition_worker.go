@@ -60,6 +60,8 @@ type partitionWorker[T StateStore] struct {
 	highestOffset    int64
 	topicPartition   TopicPartition
 	revocationWaiter sync.WaitGroup
+	// completions      []asyncJob[T]
+	// completionLock   sync.Mutex
 }
 
 func newPartitionWorker[T StateStore](
@@ -83,8 +85,8 @@ func newPartitionWorker[T StateStore](
 		revokedSignal:  make(chan struct{}, 1),
 		stopped:        make(chan struct{}),
 		asyncCompleter: asyncCompleter[T]{
-			asyncJobs:      make(chan asyncJob[T], asyncSize),
-			asyncFullReply: make(chan struct{}, 1),
+			asyncJobs: make(chan asyncJob[T], asyncSize),
+			// asyncFullReply: make(chan struct{}, 1),
 		},
 		partitionInput:         make(chan []*kgo.Record, 4),
 		eventInput:             make(chan *EventContext[T], recordsInputSize),
@@ -106,7 +108,6 @@ func (pw *partitionWorker[T]) add(records []*kgo.Record) {
 	if pw.isRevoked() {
 		return
 	}
-
 	// atomic.AddInt64(&pw.pending, int64(len(records)))
 	pw.partitionInput <- records
 }
@@ -219,15 +220,7 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 		case ec := <-pw.interjectionEventInput:
 			pw.handleInterjection(ec)
 		case job := <-pw.asyncCompleter.asyncJobs:
-			// TODO: if the partition was reject and we have not tried to produce yet
-			// drop this event. This is tricky because we need to know if we are buffered or not
-			if state, _ := job.finalize(); state == Complete {
-				job.ctx.complete()
-			}
-			select {
-			case pw.asyncCompleter.asyncFullReply <- struct{}{}:
-			default:
-			}
+			pw.processAsyncJob(job)
 		case <-pw.stopSignal:
 			for _, ij := range ijPtrs {
 				ij.cancel()
@@ -246,25 +239,22 @@ func (pw *partitionWorker[T]) waitForRevocation() {
 }
 
 type asyncCompleter[T any] struct {
-	asyncJobs      chan asyncJob[T]
-	asyncFullReply chan struct{}
+	asyncJobs chan asyncJob[T]
+	// asyncFullReply chan struct{}
 }
 
 type asyncJob[T any] struct {
 	ctx      *EventContext[T]
-	finalize func() (ExecutionState, error)
+	finalize func() ExecutionState
 }
 
 func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
-	for {
-		select {
-		case ac.asyncJobs <- j:
-			log.Tracef("Async transferred")
-			return
-		default:
-			log.Tracef("Async completion channel full, you're incoming events are significantly outpacing your async processes.")
-			<-ac.asyncFullReply
-		}
+	ac.asyncJobs <- j
+}
+
+func (pw *partitionWorker[T]) processAsyncJob(job asyncJob[T]) {
+	if job.finalize() == Complete {
+		job.ctx.complete()
 	}
 }
 
@@ -274,7 +264,7 @@ func (pw *partitionWorker[T]) isRevoked() bool {
 
 func (pw *partitionWorker[T]) handleInterjection(ec *EventContext[T]) {
 	inter := ec.interjection
-	ec.producer = <-ec.producerChan
+	pw.assignProducer(ec)
 	if ec.producer == nil && inter.callback != nil {
 		inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
 	} else if ec.producer != nil && inter.interject(ec) == Complete {
@@ -292,18 +282,28 @@ func (pw *partitionWorker[T]) handleEvent(ec *EventContext[T]) bool {
 	return true
 }
 
+func (pw *partitionWorker[T]) assignProducer(ec *EventContext[T]) {
+	// if we stop processing async completions while waiting for a producer
+	// we could eventually dealock with the eos producer
+	// if nothing is yet available, go ahead and process an asyncJob
+	for {
+		select {
+		case ec.producer = <-ec.producerChan:
+			return
+		case job := <-pw.asyncCompleter.asyncJobs:
+			pw.processAsyncJob(job)
+		}
+	}
+}
+
 func (pw *partitionWorker[T]) forwardToEventSource(ec *EventContext[T]) {
-	ec.producer = <-ec.producerChan
+	pw.assignProducer(ec)
 	if ec.producer == nil {
 		// if we're revoked, don't even add this to the onDeck producer
 		return
 	}
 	record, _ := ec.Input()
-	state, err := pw.eventSource.handleEvent(ec, record)
-
-	if err != nil {
-		log.Errorf("%v", err)
-	} else if state == Complete {
+	if pw.eventSource.handleEvent(ec, record) == Complete {
 		ec.complete()
 	}
 }

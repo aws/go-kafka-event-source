@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-func TestAsyncBatchOrdering(t *testing.T) {
+func TestAsyncBatching(t *testing.T) {
 	var items [20]BatchItem[int, int64]
 
 	for i := range items {
@@ -30,9 +30,30 @@ func TestAsyncBatchOrdering(t *testing.T) {
 		}
 	}
 	done := make(chan struct{})
-	batch := NewBatch(&EventContext[*IntStore]{}, func(_ *Batch[*IntStore, int, int64]) {
-		close(done)
-	}).Add(items[:]...)
+	jobChan := make(chan asyncJob[*IntStore]) // create a dummy channel to absorb the event
+	ec := &EventContext[*IntStore]{
+		asynCompleter: asyncCompleter[*IntStore]{
+			asyncJobs: jobChan,
+		},
+	}
+	batch := NewBatch(ec,
+		func(_ *EventContext[*IntStore], b *Batch[*IntStore, int, int64]) ExecutionState {
+			if len(b.Items) != 20 {
+				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.Items), 20)
+			}
+			close(done)
+			return Incomplete
+		},
+	).Add(items[:]...)
+
+	// simulate tyhe async completion logic of partitionWorker
+	go func() {
+		job := <-jobChan
+		state := job.finalize()
+		if state != Incomplete {
+			t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, Incomplete)
+		}
+	}()
 
 	executionCount := int64(0)
 	lastProcessed := int64(-1)
@@ -60,10 +81,11 @@ func TestAsyncBatchOrdering(t *testing.T) {
 	select {
 	case <-done:
 	case <-timer.C:
+		t.Errorf("execution timed out")
 	}
 
 	if executionCount != 2 {
-		t.Errorf("all batches did not execute")
+		t.Errorf("incorrect execution count. actual %d, expected: %d", executionCount, 2)
 	}
 
 	for _, item := range batch.Items {

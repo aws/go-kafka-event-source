@@ -32,7 +32,7 @@ type asyncJobContainer[S any, K comparable, V any] struct {
 	err          error
 }
 
-func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() (ExecutionState, error) {
+func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() ExecutionState {
 	return ajc.finalizer(ajc.eventContext, ajc.key, ajc.value, ajc.err)
 }
 
@@ -40,7 +40,7 @@ func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() (ExecutionState, error) 
 type AsyncJobProcessor[K comparable, V any] func(K, V) error
 
 // A callback invoked when a previously scheduled AsyncJob has been completed.
-type AsyncJobFinalizer[T any, K comparable, V any] func(*EventContext[T], K, V, error) (ExecutionState, error)
+type AsyncJobFinalizer[T any, K comparable, V any] func(*EventContext[T], K, V, error) ExecutionState
 
 type worker[S any, K comparable, V any] struct {
 	capacity  int
@@ -216,9 +216,9 @@ func (ap *AsyncJobScheduler[S, K, V]) newQueue() interface{} {
 	}
 }
 
-func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value V) (ExecutionState, error) {
+func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value V) ExecutionState {
 	if ap.isClosed() {
-		return Complete, errors.New("SchedulerClosedError")
+		return Complete
 	}
 	ap.scheduleItem(asyncJobContainer[S, K, V]{
 		eventContext: ec,
@@ -227,7 +227,7 @@ func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value
 		value:        value,
 		err:          nil,
 	})
-	return Incomplete, nil
+	return Incomplete
 }
 
 func (ap *AsyncJobScheduler[S, K, V]) scheduleItem(item asyncJobContainer[S, K, V]) {

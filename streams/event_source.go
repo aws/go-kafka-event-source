@@ -329,16 +329,15 @@ func (ec *EventSource[T]) createChangeLogReceiver(tp TopicPartition) T {
 }
 
 // Starts the event processing by invoking registered processors. If no processors exist for record.recordTpe, the defaultProcessor will be invoked.
-func (es *EventSource[T]) handleEvent(ctx *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+func (es *EventSource[T]) handleEvent(ctx *EventContext[T], record IncomingRecord) ExecutionState {
 	state := unknownType
-	var err error
 	if es.root != nil {
-		state, err = es.root.process(ctx, record)
+		state = es.root.process(ctx, record)
 	}
 	if state == unknownType {
-		state, err = es.defaultProcessor(ctx, record)
+		state = es.defaultProcessor(ctx, record)
 	}
-	return state, err
+	return state
 }
 
 // A callback invoked when a new TopicPartition has been assigned to a EventSource. Your callback should return an empty StateStore.
@@ -348,7 +347,7 @@ type StateStoreFactory[T StateStore] func(TopicPartition) T
 type IncomingRecordDecoder[V any] func(IncomingRecord) (V, error)
 
 // A callback invoked when a new record has been received from the EventSource, after it has been transformed via IncomingRecordTransformer.
-type EventProcessor[T any, V any] func(*EventContext[T], V) (ExecutionState, error)
+type EventProcessor[T any, V any] func(*EventContext[T], V) ExecutionState
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
 func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
@@ -362,7 +361,7 @@ func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer Inco
 }
 
 type eventExecutor[T any] interface {
-	Exec(*EventContext[T], IncomingRecord) (ExecutionState, error)
+	Exec(*EventContext[T], IncomingRecord) ExecutionState
 }
 
 // Wraps an EventProcessor with a function that decodes the record before invoking eventProcessor.
@@ -382,14 +381,14 @@ type eventProcessorExecutor[T any, V any] struct {
 	handleDeserializationError DeserializationErrorHandler
 }
 
-func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+func (epe *eventProcessorExecutor[T, V]) Exec(ec *EventContext[T], record IncomingRecord) ExecutionState {
 	if event, err := epe.decode(record); err == nil {
 		return epe.process(ec, event)
 	} else {
 		if epe.handleDeserializationError(ec, record.RecordType(), err) == Continue {
-			return Complete, err
+			return Complete
 		}
-		return Incomplete, err
+		return Incomplete
 	}
 }
 
@@ -405,17 +404,17 @@ func newEventProcessorWrapper[T any, V any](eventType string, decoder IncomingRe
 	}
 }
 
-func (ep *eventProcessorWrapper[T]) exec(ec *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+func (ep *eventProcessorWrapper[T]) exec(ec *EventContext[T], record IncomingRecord) ExecutionState {
 	return ep.eventExecutor.Exec(ec, record)
 }
 
 // process the record if records.recordType == eventProcessorWrapper.eventType, otherwise forward this record to the next processor.
-func (ep *eventProcessorWrapper[T]) process(ctx *EventContext[T], record IncomingRecord) (ExecutionState, error) {
+func (ep *eventProcessorWrapper[T]) process(ctx *EventContext[T], record IncomingRecord) ExecutionState {
 	if record.RecordType() == ep.eventType {
 		return ep.exec(ctx, record)
 	}
 	if ep.next != nil {
 		return ep.next.process(ctx, record)
 	}
-	return unknownType, nil
+	return unknownType
 }

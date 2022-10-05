@@ -36,28 +36,32 @@ func batchFor[S any, K comparable, V any](ptr unsafe.Pointer) *Batch[S, K, V] {
 }
 
 type Batch[S any, K comparable, V any] struct {
-	EventContext *EventContext[S]
+	eventContext *EventContext[S]
 	Items        []BatchItem[K, V]
-	callback     func(*Batch[S, K, V])
+	UserData     any
+	callback     BatchCallback[S, K, V]
 	completed    int64
 }
 
-func NewBatch[S any, K comparable, V any](ec *EventContext[S], cb func(*Batch[S, K, V])) *Batch[S, K, V] {
+type BatchCallback[S any, K comparable, V any] func(*EventContext[S], *Batch[S, K, V]) ExecutionState
+
+func NewBatch[S any, K comparable, V any](ec *EventContext[S], cb BatchCallback[S, K, V]) *Batch[S, K, V] {
 	return &Batch[S, K, V]{
-		EventContext: ec,
+		eventContext: ec,
 		callback:     cb,
 	}
 }
 
+func (b *Batch[S, K, V]) executeCallback() ExecutionState {
+	if b.callback != nil {
+		return b.callback(b.eventContext, b)
+	}
+	return Complete
+}
+
 func (b *Batch[S, K, V]) completeItem() {
 	if atomic.AddInt64(&b.completed, 1) == int64(len(b.Items)) {
-		if b.callback != nil {
-			b.callback(b)
-		} else {
-			b.EventContext.AsyncJobComplete(func() (ExecutionState, error) {
-				return Complete, nil
-			})
-		}
+		b.eventContext.AsyncJobComplete(b.executeCallback)
 	}
 }
 
@@ -134,10 +138,11 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) {
+func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) ExecutionState {
 	for i := range batch.Items {
-		ab.add((*BatchItem[K, V])(sak.Noescape(unsafe.Pointer(&batch.Items[i]))))
+		ab.add(&batch.Items[i])
 	}
+	return Incomplete
 }
 
 func (ab *AsyncBatcher[S, K, V]) add(bi *BatchItem[K, V]) {
@@ -193,11 +198,15 @@ func (ab *AsyncBatcher[S, K, V]) conditionallyExecuteBatch(batch *asyncBatch[K, 
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[K, V]) {
-	ab.executor(batch.items)
-	for _, item := range batch.items {
+func (ab *AsyncBatcher[S, K, V]) completeBatchItems(items []*BatchItem[K, V]) {
+	for _, item := range items {
 		batchFor[S, K, V](item.batch).completeItem()
 	}
+}
+
+func (ab *AsyncBatcher[S, K, V]) executeBatch(batch *asyncBatch[K, V]) {
+	ab.executor(batch.items)
+	ab.completeBatchItems(batch.items)
 	ab.mux.Lock()
 	ab.executingCount--
 	// TODO: handle errors right here as this may effect other batches
@@ -210,13 +219,13 @@ func (ab *AsyncBatcher[S, K, V]) flushPendingItems() {
 	for el := ab.pendingItems.Front(); el != nil; {
 		if batch := ab.batchFor(el.Value); batch != nil {
 			ab.addToBatch(el.Value, batch)
+			tmp := el.Next()
+			ab.pendingItems.Remove(el)
+			el = tmp
 			if ab.executingCount == len(ab.batches) {
 				// there are no available batches, no need to continue in this loop
 				return
 			}
-			tmp := el.Next()
-			ab.pendingItems.Remove(el)
-			el = tmp
 		} else {
 			el = el.Next()
 		}
