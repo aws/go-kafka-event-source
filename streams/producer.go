@@ -44,7 +44,9 @@ type Producer struct {
 
 // Create a new Producer. Destination provides cluster connect information.
 func NewProducer(destination Destination, opts ...kgo.Opt) *Producer {
-	opts = append(opts, kgo.ProducerLinger(5*time.Millisecond), kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)))
+	opts = append(opts, kgo.ProducerLinger(5*time.Millisecond),
+		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
+	)
 	client, err := NewClient(destination.Cluster, opts...)
 	if err != nil {
 		panic(err)
@@ -95,7 +97,8 @@ func NewBatchProducer[S any](destination Destination) *BatchProducer[S] {
 	client, err := NewClient(
 		destination.Cluster,
 		kgo.ProducerLinger(5*time.Millisecond),
-		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)))
+		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
+	)
 
 	if err != nil {
 		panic(err)

@@ -27,8 +27,6 @@ Kafka client framework. Using Kafka transactions, it provides for EOS, data inte
 If you wish to use GKES as straight Kafka consumer, it will fit the bill as well. Though there are plenty of libraries for that,
 and researching which best fits your use case is time well spent.
 
-# What it is not
-
 GKES is not an all-in-one, do-everything black box. Some elements, in particular the StateStore, have been left without
 comprehensive implementations.
 

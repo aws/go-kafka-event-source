@@ -307,9 +307,6 @@ func (sc *eventSourceConsumer[T]) interject(partition int32, cmd Interjector[T])
 		topicPartition: w.topicPartition,
 		interjector: func(ec *EventContext[T], t time.Time) ExecutionState {
 			state := cmd(ec, t)
-			// if callback != nil {
-			// 	callback()
-			// }
 			close(c)
 			return state
 		},
@@ -326,20 +323,30 @@ func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionSync(interjector Inte
 	ps := sak.MapKeysToSlice(sc.workers)
 	sc.workerMux.Unlock()
 	for _, p := range ps {
-		<-sc.interject(p, interjector)
+		if err := <-sc.interject(p, interjector); err != nil {
+			log.Errorf("Could not interject into %d, error: %v", p, err)
+		}
 	}
+}
+
+type interjectionTracker struct {
+	partition int32
+	c         <-chan error
 }
 
 func (sc *eventSourceConsumer[T]) forEachChangeLogPartitionAsync(interjector Interjector[T]) {
 	sc.workerMux.Lock()
 	ps := sak.MapKeysToSlice(sc.workers)
 	sc.workerMux.Unlock()
-	chans := make([]<-chan error, len(ps))
+
+	its := make([]interjectionTracker, 0, len(ps))
 	for _, p := range ps {
-		chans = append(chans, sc.interject(p, interjector))
+		its = append(its, interjectionTracker{p, sc.interject(p, interjector)})
 	}
-	for _, c := range chans {
-		<-c
+	for _, it := range its {
+		if err := <-it.c; err != nil {
+			log.Errorf("Could not interject into %d, error: %v", it.partition, err)
+		}
 	}
 }
 

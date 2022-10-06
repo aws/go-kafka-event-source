@@ -104,7 +104,8 @@ it's individual keys and processes the keys in parallel.
 
 After the the scheduling is complete for a key/value,
 Scheduler will call the `processor` callback defined at initialization.
-The output of this call will be passed to the `receiver` callback if present
+The output of this call will be passed to the `finalizer` callback.
+If `finalizer` is nil, the event is marked as `Complete`, once the job is finished, ignoring any errors.
 */
 type AsyncJobScheduler[S StateStore, K comparable, V any] struct {
 	runStatus         sak.RunStatus
@@ -174,7 +175,11 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	if config.Concurrency < 1 {
 		return nil, errors.New("concurrency must be > 0")
 	}
-
+	if finalizer == nil {
+		finalizer = func(ec *EventContext[S], k K, v V, err error) ExecutionState {
+			return Complete
+		}
+	}
 	maxConcurrentKeys := config.concurrentKeys()
 	ap := &AsyncJobScheduler[S, K, V]{
 		runStatus:         eventSource.runStatus.Fork(),

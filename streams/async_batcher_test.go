@@ -30,14 +30,14 @@ func TestAsyncBatching(t *testing.T) {
 		}
 	}
 	done := make(chan struct{})
-	jobChan := make(chan asyncJob[*IntStore]) // create a dummy channel to absorb the event
-	ec := &EventContext[*IntStore]{
-		asynCompleter: asyncCompleter[*IntStore]{
+	jobChan := make(chan asyncJob[*intStore]) // create a dummy channel to absorb the event
+	ec := &EventContext[*intStore]{
+		asynCompleter: asyncCompleter[*intStore]{
 			asyncJobs: jobChan,
 		},
 	}
 	batch := NewBatch(ec,
-		func(_ *EventContext[*IntStore], b *Batch[*IntStore, int, int64]) ExecutionState {
+		func(_ *EventContext[*intStore], b *Batch[*intStore, int, int64]) ExecutionState {
 			if len(b.Items) != 20 {
 				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.Items), 20)
 			}
@@ -74,7 +74,7 @@ func TestAsyncBatching(t *testing.T) {
 
 		}
 	}
-	batcher := NewAsyncBatcher[*IntStore](nil, executor, 10, 10, 0)
+	batcher := NewAsyncBatcher[*intStore](nil, executor, 10, 10, 0)
 	batcher.Add(batch)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -93,5 +93,47 @@ func TestAsyncBatching(t *testing.T) {
 		if item.Value+userData != 0 {
 			t.Errorf("invalid userdata: %v, %v", userData, item.Value)
 		}
+	}
+}
+
+func TestAsyncNoopBatching(t *testing.T) {
+
+	done := make(chan struct{})
+	jobChan := make(chan asyncJob[*intStore]) // create a dummy channel to absorb the event
+	ec := &EventContext[*intStore]{
+		asynCompleter: asyncCompleter[*intStore]{
+			asyncJobs: jobChan,
+		},
+	}
+	batch := NewBatch(ec,
+		func(_ *EventContext[*intStore], b *Batch[*intStore, int, int64]) ExecutionState {
+			if len(b.Items) != 0 {
+				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.Items), 0)
+			}
+			close(done)
+			return Complete
+		},
+	)
+
+	// simulate tyhe async completion logic of partitionWorker
+	go func() {
+		job := <-jobChan
+		state := job.finalize()
+		if state != Complete {
+			t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, Complete)
+		}
+	}()
+
+	executor := func(batch []*BatchItem[int, int64]) {
+		t.Errorf("executor should not have been executed")
+	}
+	batcher := NewAsyncBatcher[*intStore](nil, executor, 10, 10, 0)
+	batcher.Add(batch)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		t.Errorf("execution timed out")
 	}
 }
