@@ -52,16 +52,16 @@ func toKgoLoglevel(level LogLevel) kgo.LogLevel {
 /*
 Provides the interface needed by GKES to intergrate with your loggin mechanism. Example:
 
- import (
-	"mylogger"
-	"github.com/aws/go-kafka-event-source/streams"
- )
+	 import (
+		"mylogger"
+		"github.com/aws/go-kafka-event-source/streams"
+	 )
 
- func main() {
-	// GKES will emit log at whatever level is defined by NewLogger()
-	// kgo will emit logs at LogLevelError
-	streams.InitLogger(mylogger.NewLogger(), streams.LogLevelError)
- }
+	 func main() {
+		// GKES will emit log at whatever level is defined by NewLogger()
+		// kgo will emit logs at LogLevelError
+		streams.InitLogger(mylogger.NewLogger(), streams.LogLevelError)
+	 }
 */
 type Logger interface {
 	Tracef(msg string, args ...any)
@@ -123,18 +123,18 @@ WrapLogger allows GKES to emit logs at a higher level than your own Logger.
 Useful if you need debug level logging for your own application, but want to cluuter your logs with gstream output.
 Example:
 
- import (
-	"mylogger"
-	"github.com/aws/go-kafka-event-source/streams"
- )
+	 import (
+		"mylogger"
+		"github.com/aws/go-kafka-event-source/streams"
+	 )
 
- func main() {
-	// your application will emit logs at "Debug"
-	// GKES will emit logs at LogLevelError
-	// kgo will emit logs at LogLevelNone
-	gkesLogger := streams.WrapLogger(mylogger.NewLogger("Debug"), streams.LogLevelError)
-	streams.InitLogger(gkesLogger, streams.LogLevelNone)
- }
+	 func main() {
+		// your application will emit logs at "Debug"
+		// GKES will emit logs at LogLevelError
+		// kgo will emit logs at LogLevelNone
+		gkesLogger := streams.WrapLogger(mylogger.NewLogger("Debug"), streams.LogLevelError)
+		streams.InitLogger(gkesLogger, streams.LogLevelNone)
+	 }
 */
 func WrapLogger(logger Logger, level LogLevel) Logger {
 	return logWrapper{
@@ -201,12 +201,13 @@ var oneLogger = sync.Once{}
 Initializes the GKES logger. `kafkaDriverLogLevel` defines the log level for the underlying kgo clients.
 This call should be the first interaction with the GKES module. Subsequent calls will have no effect.
 If never called, the default unitialized logger writes to STDOUT at LogLevelError for both GKES and kgo. Example:
- import "github.com/aws/go-kafka-event-source/streams"
 
- func main() {
-	streams.InitLogger(streams.SimpleLogger(streams.LogLevelInfo), streams.LogLevelError)
-	// ... initialize your application
- }
+	 import "github.com/aws/go-kafka-event-source/streams"
+
+	 func main() {
+		streams.InitLogger(streams.SimpleLogger(streams.LogLevelInfo), streams.LogLevelError)
+		// ... initialize your application
+	 }
 */
 func InitLogger(l Logger, kafkaDriverLogLevel LogLevel) Logger {
 	oneLogger.Do(func() {
