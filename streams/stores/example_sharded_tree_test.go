@@ -51,7 +51,7 @@ func ExampleShardedTree_contact() {
 	contact.PhoneNumber = "+18005551212"
 
 	if oldContact, updated := tree.ReplaceOrInsert(contact); updated {
-		fmt.Printf("PhoneNumber update from %s to %s\n", oldContact.PhoneNumber, contact.PhoneNumber)
+		fmt.Printf("PhoneNumber updated from %s to %s\n", oldContact.PhoneNumber, contact.PhoneNumber)
 	}
 	// Output: PhoneNumber updated from +18005551213 to +18005551212
 }
