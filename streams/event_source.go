@@ -289,8 +289,7 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 	})
 }
 
-// Executes `cmd` in the context of the given partition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
-// `callback` is used interally to make InterjectAll a blocking call.
+// Executes `cmd` in the context of the given partition.
 func (es *EventSource[T]) Interject(partition int32, cmd Interjector[T]) <-chan error {
 	return es.consumer.interject(partition, cmd)
 }
