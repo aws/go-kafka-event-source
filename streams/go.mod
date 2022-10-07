@@ -20,9 +20,4 @@ require (
 	github.com/stretchr/testify v1.8.0 // indirect
 )
 
-retract (
-	v1.0.2
-	v1.0.1
-	v1.0.0
-	v1.0.0-pre
-)
+retract [v0.0.0-00000000000000-000000000000, v1.0.2]
