@@ -80,8 +80,16 @@ func (es *EventSource[T]) ConsumeEvents() {
 	go es.closeOnFail()
 }
 
+// Returns the [EventSourceState] of the underlying [Source], [Healthy] or [Unhealthy].
+// When the EventSource encounters an unrecoverable error (unable to execute a transaction for example), it will enter an [Unhealthy] state.
+// Intended to be used by a health check processes for rolling back during a bad deployment.
 func (es *EventSource[T]) State() EventSourceState {
 	return es.source.State()
+}
+
+// The [Source] used by the EventSource.
+func (es *EventSource[T]) Source() *Source {
+	return es.source
 }
 
 func (es *EventSource[T]) closeOnFail() {
@@ -281,8 +289,7 @@ func (es *EventSource[T]) ScheduleInterjection(interjector Interjector[T], every
 	})
 }
 
-// Executes `cmd` in the context of the given partition. `callback“ is an optional, and will be executed once the interjection is complete if non-nil.
-// `callback` is used interally to make InterjectAll a blocking call.
+// Executes `cmd` in the context of the given partition.
 func (es *EventSource[T]) Interject(partition int32, cmd Interjector[T]) <-chan error {
 	return es.consumer.interject(partition, cmd)
 }

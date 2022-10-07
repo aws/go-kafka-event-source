@@ -19,3 +19,9 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/stretchr/testify v1.8.0 // indirect
 )
+
+retract (
+	v1.0.2
+	v1.0.1
+	v1.0.0
+)

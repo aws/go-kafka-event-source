@@ -204,7 +204,7 @@ func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] 
 	assignments := make(map[int32]kgo.Offset, partitionCount)
 	partitions := make([]int32, partitionCount)
 
-	topic := source.ChangeLogTopicName()
+	topic := source.StateStoreTopicName()
 
 	for i := int32(0); i < partitionCount; i++ {
 		partitions[i] = i

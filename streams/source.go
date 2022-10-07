@@ -31,8 +31,11 @@ const (
 type EventSourceConfig struct {
 	// The group id for the underlying Kafka consumer group.
 	GroupId string
-	// The Kafka Topic to consume
+	// The Kafka topic to consume
 	Topic string
+	// The compacted Kafka topic on which to publish/consume [StateStore] data. If not provided, GKES will generate a name which includes
+	// Topic and GroupId.
+	StateStoreTopic string
 	// The desired number of partitions for Topic.
 	NumPartitions int
 	// The desired replication factor for Topic. Defaults to 1.
@@ -84,6 +87,8 @@ type EventSourceConfig struct {
 	TxnErrorHandler             TxnErrorHandler
 }
 
+// A readonly wrapper of [EventSourceConfig]. When an [EventSource] is initialized, it reconciles the actual Topic configuration
+// from the Kafka cluster (or creates it if missing) and wraps the correct [[EventSourceConfig] in a Source.
 type Source struct {
 	state   uint64
 	config  EventSourceConfig
@@ -94,6 +99,7 @@ func newSource(config EventSourceConfig) *Source {
 	return &Source{state: uint64(Healthy), config: config, failure: make(chan error)}
 }
 
+// A convenience method for creating a [Destination] form your Source. Can be used for creating a [Producer] or [BatchProducer] which publishes to your [EventSource].
 func (s *Source) AsDestination() Destination {
 	return Destination{
 		DefaultTopic:  s.config.Topic,
@@ -173,13 +179,16 @@ func (s *Source) NumPartitions() int {
 	return s.config.NumPartitions
 }
 
-// Returns the formatted topic name usewd for the commit log of Source
+// Returns the formatted topic name used for the commit log of Source
 func (s *Source) CommitLogTopicNameForGroupId() string {
 	return fmt.Sprintf("gkes_commit_log_%s", s.config.GroupId)
 }
 
-// Returns the formatted topic name used for the change log ([StateStore]) of Source
-func (s *Source) ChangeLogTopicName() string {
+// Returns the formatted topic name used for the [StateStore] of Source
+func (s *Source) StateStoreTopicName() string {
+	if len(s.config.StateStoreTopic) > 0 {
+		return s.config.StateStoreTopic
+	}
 	return fmt.Sprintf("gkes_change_log_%s_%s", s.config.Topic, s.config.GroupId)
 }
 
