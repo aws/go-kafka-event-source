@@ -211,6 +211,15 @@ func isNetworkError(err error) bool {
 // Returns a corrected Source where NumPartitions and CommitLogPartitions are pulled from a ListTopics call. This is to prevent drift errors.
 // Returns an error if the details for Source topics could not be retrieved, or if there is a mismatch in partition counts fo the source topic and change log topic.
 func CreateSource(sourceConfig EventSourceConfig) (resolved *Source, err error) {
+	if len(sourceConfig.GroupId) == 0 {
+		return nil, fmt.Errorf("GroupId not provided")
+	}
+	if len(sourceConfig.Topic) == 0 {
+		return nil, fmt.Errorf("Topic not provided")
+	}
+	if sourceConfig.SourceCluster == nil {
+		return nil, fmt.Errorf("SourceCluster not provided")
+	}
 	source := newSource(sourceConfig)
 	for retryCount := 0; retryCount < 15; retryCount++ {
 		resolved, err = createSource(source)
@@ -226,7 +235,7 @@ func CreateSource(sourceConfig EventSourceConfig) (resolved *Source, err error) 
 func resolveOrCreateTopics(source *Source, sourceTopicAdminClient, eosAdminClient *kadm.Client) (*Source, error) {
 	topic := source.Topic()
 	commitLogName := source.CommitLogTopicNameForGroupId()
-	changLogName := source.ChangeLogTopicName()
+	changLogName := source.StateStoreTopicName()
 	res, err := sourceTopicAdminClient.ListTopicsWithInternal(context.Background(), topic)
 	if err != nil {
 		return nil, err
@@ -291,7 +300,7 @@ func DeleteSource(sourceConfig EventSourceConfig) error {
 	sourceTopicAdminClient.DeleteTopics(context.Background(), source.config.Topic)
 	eosAdminClient.DeleteTopics(context.Background(),
 		source.CommitLogTopicNameForGroupId(),
-		source.ChangeLogTopicName())
+		source.StateStoreTopicName())
 	return nil
 }
 

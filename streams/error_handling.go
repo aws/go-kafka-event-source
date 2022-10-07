@@ -43,12 +43,14 @@ type ErrorContext interface {
 type DeserializationErrorHandler func(ec ErrorContext, eventType string, err error) ErrorResponse
 type TxnErrorHandler func(err error) ErrorResponse
 
+// The default DeserializationErrorHandler. Simply logs the error and returns [Continue].
 func DefaultDeserializationErrorHandler(ec ErrorContext, eventType string, err error) ErrorResponse {
 	log.Errorf("failed to deserialize record for %+v, offset: %d, eventType: %s,error: %v", ec.TopicPartition(), ec.Offset(), eventType, err)
 	return Continue
 }
 
+// The default and recommended TxnErrorHandler. Returns [FailConsumer] on txn errors.
 func DefaultTxnErrorHandler(err error) ErrorResponse {
 	log.Errorf("failing consumer due to eos txn error: %v", err)
-	return FatallyExit
+	return FailConsumer
 }

@@ -49,7 +49,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 	cl := newEosCommitLog(eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
 	var partitionedStore *partitionedChangeLog[T]
 	source := eventSource.source
-	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.ChangeLogTopicName())
+	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.StateStoreTopicName())
 
 	sc := &eventSourceConsumer[T]{
 		partitionedStore: partitionedStore,

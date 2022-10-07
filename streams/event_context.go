@@ -96,7 +96,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 // AsyncJobComplete should be called when an async event processor has performed it's function.
 // the finalize cunction should return Complete if there are no other pending asynchronous jobs for the event context in question,
 // regardless of error state. `finalize` does no accept any arguments, so you're callback should encapsulate
-// any pertinent data needed for processing. If you are using [AsyncBatchScheduler] or [AsyncJobScheduler], you should not need to interact with this method directly.
+// any pertinent data needed for processing. If you are using [AsyncBatcher], [AsyncJobScheduler] or [BatchProducer], you should not need to interact with this method directly.
 func (ec *EventContext[T]) AsyncJobComplete(finalize func() ExecutionState) {
 	ec.asynCompleter.asyncComplete(asyncJob[T]{
 		ctx:      ec,
