@@ -17,7 +17,7 @@ package sak
 import "context"
 
 // RunStatus encapsulates a cancellable Context for the purposes
-// of determining whether a sub-process should is running or to instruct it halt.
+// of determining whether a sub-process is running or to instruct it halt.
 type RunStatus struct {
 	ctx    context.Context
 	cancel context.CancelFunc

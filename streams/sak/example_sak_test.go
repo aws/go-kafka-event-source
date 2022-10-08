@@ -16,6 +16,7 @@
 package sak_test
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/aws/go-kafka-event-source/streams/sak"
@@ -85,4 +86,26 @@ func ExamplePool() {
 	fmt.Println(len(b))
 	// Output: 10
 	// 0
+}
+
+func ExampleRunStatus() {
+	parent := sak.NewRunStatus(context.Background())
+	child1 := parent.Fork()
+	child2 := parent.Fork()
+
+	child1.Halt()
+
+	fmt.Println(parent.Running())
+	fmt.Println(child1.Running())
+	fmt.Println(child2.Running())
+
+	parent.Halt()
+
+	fmt.Println(parent.Running())
+	fmt.Println(child2.Running())
+	// Output: true
+	// false
+	// true
+	// false
+	// false
 }

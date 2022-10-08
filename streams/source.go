@@ -87,8 +87,8 @@ type EventSourceConfig struct {
 	TxnErrorHandler             TxnErrorHandler
 }
 
-// A readonly wrapper of [EventSourceConfig]. When an [EventSource] is initialized, it reconciles the actual Topic configuration
-// from the Kafka cluster (or creates it if missing) and wraps the correct [[EventSourceConfig] in a Source.
+// A readonly wrapper of [EventSourceConfig]. When an [EventSource] is initialized, it reconciles the actual Topic configuration (NumPartitions)
+// from the Kafka cluster (or creates it if missing) and wraps the corrected [EventSourceConfig].
 type Source struct {
 	state   uint64
 	config  EventSourceConfig

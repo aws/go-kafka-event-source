@@ -114,5 +114,4 @@ func TestEventSourceDelete(t *testing.T) {
 	if len(trees) != es.consumer.source.Config().NumPartitions {
 		t.Errorf("incorrect number of stores. actual: %d, expected: %d", len(trees), es.consumer.source.Config().NumPartitions)
 	}
-
 }

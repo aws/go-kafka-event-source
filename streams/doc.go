@@ -17,8 +17,6 @@ GKES (Go Kafka Event Source) attempts to fill the gaps ub the Go/Kafka library e
 local state stores and incremental consumer rebalancing to Go Kafka consumers, making it a viable alternative to
 a traditional Kafka Streams application written in Java.
 
-GKES takes advantage of Go generics. As such, the minimum requred Go version is 1.18.
-
 # What it is
 
 GKES is Go/Kafka library tailored towards the development of

@@ -17,7 +17,7 @@ package streams
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"math"
 	"unsafe"
 
@@ -59,9 +59,9 @@ func JsonItemEncoder[T any](recordType string, item T) *Record {
 // A convenience function for encoding an item into a ChangeLogEntry suitable writing to a StateStore
 // Please not that the Key on the entry will be left uninitialized. Usage:
 //
-//	entry := codec.JsonChangeLogEntryEncoder("myType", myItem)
+//	entry := codec.EncodeJsonChangeLogEntryValue("myType", myItem)
 //	entry.WriteKeyString(myItem.Key)
-func JsonChangeLogEntryEncoder[T any](entryType string, item T) ChangeLogEntry {
+func EncodeJsonChangeLogEntryValue[T any](entryType string, item T) ChangeLogEntry {
 	var codec JsonCodec[T]
 	cle := NewChangeLogEntry().WithEntryType(entryType)
 	codec.Encode(cle.ValueWriter(), item)
@@ -79,18 +79,31 @@ func (intCodec[T]) Decode(b []byte) (T, error) {
 	return readIntegerFromByteArray[T](b), nil
 }
 
+// Convenience codec for working with int types.
+// Will never induce an error unless there is an OOM condition, so they are safe to ignore on Encode/Decode
 var IntCodec = intCodec[int]{}
+
+// Convenience codec for working with int64 types
+// Will never induce an error unless there is an OOM condition, so they are safe to ignore on Encode/Decode
 var Int64Codec = intCodec[int64]{}
+
+// Convenience codec for working with int32 types
+// Will never induce an error unless there is an OOM condition, so they are safe to ignore on Encode/Decode
 var Int32Codec = intCodec[int32]{}
 
+// A convenience Codec for integers where the encoded value is suitable for sorting in data structure which use
+// []byte as keys (such as an LSM based db like BadgerDB or RocksDB). Useful if you need to persist items in order by timestamp
+// or some other integer value.
+// Decode will generate an error if the input []byte size is not [LexInt64Size].
 var LexoInt64Codec = lexoInt64Codec{}
 
 type lexoInt64Codec struct{}
 
-const lexIntSize = int(unsafe.Sizeof(uint64(1))) + 1
+const LexInt64Size = int(unsafe.Sizeof(uint64(1))) + 1
 
+// Encodes the provided value. Will never induce an error unless there is an OOM condition, so it should be safe to ignore.
 func (lexoInt64Codec) Encode(buf *bytes.Buffer, i int64) error {
-	var b [lexIntSize]byte
+	var b [LexInt64Size]byte
 	if i > 0 {
 		b[0] = 1
 		binary.LittleEndian.PutUint64(b[1:], uint64(i))
@@ -101,9 +114,10 @@ func (lexoInt64Codec) Encode(buf *bytes.Buffer, i int64) error {
 	return nil
 }
 
+// Decodes the provided []byte. If len([]byte) is not equal to [LexInt64Size], an error will be generated.
 func (lexoInt64Codec) Decode(b []byte) (int64, error) {
-	if len(b) != lexIntSize {
-		return 0, errors.New("invalid lexo integer []byte length")
+	if len(b) != LexInt64Size {
+		return 0, fmt.Errorf("invalid lexo integer []byte length. Expected %d, actual: %d", LexInt64Size, len(b))
 	}
 	sign := b[0]
 	val := int64(binary.LittleEndian.Uint64(b[1:]))
@@ -113,10 +127,11 @@ func (lexoInt64Codec) Decode(b []byte) (int64, error) {
 	return val - math.MaxInt64, nil
 }
 
-// A generic JSON en/decoder. =
-// Uses "github.com/json-iterator/go".ConfigCompatibleWithStandardLibrary for en/decoding JSON in a perforamnt way
+// A generic JSON en/decoder.
+// Uses "github.com/json-iterator/go".ConfigCompatibleWithStandardLibrary for en/decoding JSON in a performant way
 type JsonCodec[T any] struct{}
 
+// Encodes the provided value.
 func (JsonCodec[T]) Encode(b *bytes.Buffer, t T) error {
 	stream := defaultJson.BorrowStream(b)
 	defer defaultJson.ReturnStream(stream)
@@ -124,6 +139,7 @@ func (JsonCodec[T]) Encode(b *bytes.Buffer, t T) error {
 	return stream.Flush()
 }
 
+// Decodes the provided []byte,
 func (JsonCodec[T]) Decode(b []byte) (T, error) {
 	iter := defaultJson.BorrowIterator(b)
 	defer defaultJson.ReturnIterator(iter)
@@ -135,26 +151,32 @@ func (JsonCodec[T]) Decode(b []byte) (T, error) {
 
 type stringCodec struct{}
 
+// Encodes the provide value. Will never induce an error unless there is an OOM condition, so it should be safe to ignore.
 func (stringCodec) Encode(b *bytes.Buffer, s string) error {
 	_, err := b.WriteString(s)
 	return err
 }
 
+// Decodes the provide value. Will never induce an error so it is safe to ignore.
 func (stringCodec) Decode(b []byte) (string, error) {
 	return string(b), nil
 }
 
+// Convenience codec for working with strings.
 var StringCodec Codec[string] = stringCodec{}
 
 type byteCodec struct{}
 
+// Encodes the provide value. Will never induce an error unless there is an OOM condition, so it should be safe to ignore on Encode/Decode
 func (byteCodec) Encode(b *bytes.Buffer, v []byte) error {
 	_, err := b.Write(v)
 	return err
 }
 
+// Decodes the provide value. Will never induce an error so it is safe to ignore.
 func (byteCodec) Decode(b []byte) ([]byte, error) {
 	return b, nil
 }
 
+// Convenience codec for working with raw `[]byte`s
 var ByteCodec Codec[[]byte] = byteCodec{}
