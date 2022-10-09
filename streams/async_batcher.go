@@ -33,57 +33,86 @@ const (
 type BatchItem[K comparable, V any] struct {
 	batch    unsafe.Pointer
 	itemType batchItemType
-	Key      K
+	key      K
 	Value    V
 	Err      error
 	UserData any
 }
 
-func batchFor[S any, K comparable, V any](ptr unsafe.Pointer) *Batch[S, K, V] {
-	return (*Batch[S, K, V])(ptr)
+func (bi BatchItem[K, V]) Key() K {
+	return bi.key
 }
 
-type Batch[S any, K comparable, V any] struct {
+func batchFor[S any, K comparable, V any](ptr unsafe.Pointer) *BatchItems[S, K, V] {
+	return (*BatchItems[S, K, V])(ptr)
+}
+
+type BatchItems[S any, K comparable, V any] struct {
 	eventContext *EventContext[S]
-	Items        []BatchItem[K, V]
+	key          K
+	items        []BatchItem[K, V]
 	UserData     any
 	callback     BatchCallback[S, K, V]
 	completed    int64
 }
 
-type BatchCallback[S any, K comparable, V any] func(*EventContext[S], *Batch[S, K, V]) ExecutionState
+type BatchCallback[S any, K comparable, V any] func(*EventContext[S], *BatchItems[S, K, V]) ExecutionState
 
-func NewBatch[S any, K comparable, V any](ec *EventContext[S], cb BatchCallback[S, K, V]) *Batch[S, K, V] {
-	return &Batch[S, K, V]{
+// Creates a container for BatchItems and ties them to an EventContext. Once all items in BatchItems.Items() have been executed,
+// the provided BatchCallback will be executed.
+func NewBatchItems[S any, K comparable, V any](ec *EventContext[S], key K, cb BatchCallback[S, K, V]) *BatchItems[S, K, V] {
+	return &BatchItems[S, K, V]{
 		eventContext: ec,
+		key:          key,
 		callback:     cb,
 	}
 }
 
-func (b *Batch[S, K, V]) executeCallback() ExecutionState {
+func (b *BatchItems[S, K, V]) Key() K {
+	return b.key
+}
+
+func (b *BatchItems[S, K, V]) Items() []BatchItem[K, V] {
+	return b.items
+}
+
+func (b *BatchItems[S, K, V]) executeCallback() ExecutionState {
 	if b.callback != nil {
 		return b.callback(b.eventContext, b)
 	}
 	return Complete
 }
 
-func (b *Batch[S, K, V]) completeItem() {
-	if atomic.AddInt64(&b.completed, 1) == int64(len(b.Items)) {
+func (b *BatchItems[S, K, V]) completeItem() {
+	if atomic.AddInt64(&b.completed, 1) == int64(len(b.items)) {
 		b.eventContext.AsyncJobComplete(b.executeCallback)
 	}
 }
 
-func (b *Batch[S, K, V]) Add(items ...BatchItem[K, V]) *Batch[S, K, V] {
-	for i := range items {
-		items[i].itemType = normal
-		items[i].batch = unsafe.Pointer(b)
+// Adds items to BatchItems container. Values added in this method will inherit their key from the BatchItems container.
+func (b *BatchItems[S, K, V]) Add(values ...V) *BatchItems[S, K, V] {
+	for _, value := range values {
+		b.items = append(b.items, BatchItem[K, V]{
+			key:      b.key,
+			Value:    value,
+			itemType: normal,
+			batch:    unsafe.Pointer(b),
+		})
 	}
-	b.Items = append(b.Items, items...)
 	return b
 }
 
-func (b *Batch[S, K, V]) AddKeyValue(key K, value V) *Batch[S, K, V] {
-	b.Items = append(b.Items, BatchItem[K, V]{batch: unsafe.Pointer(b), Key: key, Value: value})
+// AddWithKey() is similar to Add(), but the items added do not inherit their key from the BatchItems.
+// Useful for interjectors that may need to batch items that belong to multiple keys.
+func (b *BatchItems[S, K, V]) AddWithKey(key K, values ...V) *BatchItems[S, K, V] {
+	for _, value := range values {
+		b.items = append(b.items, BatchItem[K, V]{
+			key:      key,
+			Value:    value,
+			itemType: normal,
+			batch:    unsafe.Pointer(b),
+		})
+	}
 	return b
 }
 
@@ -98,14 +127,14 @@ const (
 
 type asyncBatchExecutor[S any, K comparable, V any] struct {
 	items      []*BatchItem[K, V]
-	noops      []*Batch[S, K, V]
+	noops      []*BatchItems[S, K, V]
 	state      asyncBatchState
 	flushTimer *time.Timer
 }
 
 func (b *asyncBatchExecutor[S, K, V]) add(item *BatchItem[K, V]) {
 	if item.itemType == placeholder {
-		b.noops = append(b.noops, (*Batch[S, K, V])(item.batch))
+		b.noops = append(b.noops, (*BatchItems[S, K, V])(item.batch))
 	} else {
 		b.items = append(b.items, item)
 	}
@@ -113,7 +142,7 @@ func (b *asyncBatchExecutor[S, K, V]) add(item *BatchItem[K, V]) {
 
 func (b *asyncBatchExecutor[S, K, V]) reset(assignments map[K]*asyncBatchExecutor[S, K, V]) {
 	for i, item := range b.items {
-		delete(assignments, item.Key)
+		delete(assignments, item.key)
 		b.items[i] = nil
 	}
 	for i := range b.noops {
@@ -124,6 +153,13 @@ func (b *asyncBatchExecutor[S, K, V]) reset(assignments map[K]*asyncBatchExecuto
 	b.state = batcherReady
 }
 
+/*
+AsyncBatcher performs a similar function to the [AsyncJobScheduler],
+but is intended for performing actions for multiple events at a time.
+This is particularly useful when interacting with systems which provide a batch API.
+
+For detailed examples, see https://github.com/aws/go-kafka-event-source/docs/asynprocessing.md
+*/
 type AsyncBatcher[S any, K comparable, V any] struct {
 	executors      []*asyncBatchExecutor[S, K, V]
 	assignments    map[K]*asyncBatchExecutor[S, K, V]
@@ -135,6 +171,9 @@ type AsyncBatcher[S any, K comparable, V any] struct {
 	mux            sync.Mutex
 }
 
+// Create a new AsynBatcher. Each invocation of `executor` will have a maximum of `maxBatchSize` items.
+// No more than `maxConcurrentBatches` will be executing at any given time. AsynBatcher will accumulate items until `delay` has elapsed,
+// or `maxBatchSize` items have been received.
 func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[K, V], maxBatchSize, maxConcurrentBatches int, delay time.Duration) *AsyncBatcher[S, K, V] {
 	executors := make([]*asyncBatchExecutor[S, K, V], maxConcurrentBatches)
 	for i := range executors {
@@ -156,8 +195,9 @@ func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource
 	}
 }
 
-func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) ExecutionState {
-	if len(batch.Items) == 0 {
+// Schedules items in BatchItems to be executed when capoacity is available.
+func (ab *AsyncBatcher[S, K, V]) Add(batch *BatchItems[S, K, V]) ExecutionState {
+	if len(batch.items) == 0 {
 		/*
 			since all events for a given key *must* travel through the async processor
 			we need to add a placeholder in the cases where there are no items to process
@@ -168,12 +208,12 @@ func (ab *AsyncBatcher[S, K, V]) Add(batch *Batch[S, K, V]) ExecutionState {
 
 			Add a placeholder to ensure this doesn't happen.
 		*/
-		ab.add(&BatchItem[K, V]{batch: unsafe.Pointer(batch), itemType: placeholder})
+		ab.add(&BatchItem[K, V]{batch: unsafe.Pointer(batch), key: batch.key, itemType: placeholder})
 	}
-	for i := range batch.Items {
+	for i := range batch.items {
 		ab.add(
 			// ensure we don't escape to the heap
-			(*BatchItem[K, V])(sak.Noescape(unsafe.Pointer(&batch.Items[i]))),
+			(*BatchItem[K, V])(sak.Noescape(unsafe.Pointer(&batch.items[i]))),
 		)
 	}
 	return Incomplete
@@ -190,7 +230,7 @@ func (ab *AsyncBatcher[S, K, V]) add(bi *BatchItem[K, V]) {
 }
 
 func (ab *AsyncBatcher[S, K, V]) asyncExecutorFor(item *BatchItem[K, V]) *asyncBatchExecutor[S, K, V] {
-	if batch, ok := ab.assignments[item.Key]; ok && batch.state == batcherReady {
+	if batch, ok := ab.assignments[item.key]; ok && batch.state == batcherReady {
 		return batch
 	} else if ok {
 		// this key is currently in an executing batch, so we have to wait for it to finish
@@ -205,7 +245,7 @@ func (ab *AsyncBatcher[S, K, V]) asyncExecutorFor(item *BatchItem[K, V]) *asyncB
 }
 
 func (ab *AsyncBatcher[S, K, V]) addToExecutor(item *BatchItem[K, V], executor *asyncBatchExecutor[S, K, V]) {
-	ab.assignments[item.Key] = executor
+	ab.assignments[item.key] = executor
 	executor.add(item)
 
 	if len(executor.items)+len(executor.noops) == ab.maxBatchSize {

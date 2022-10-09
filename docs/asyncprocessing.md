@@ -51,9 +51,9 @@ GKES provides a few async processing implementations. When these are used proper
 
 GKES will only present an EventContext to your code when no other go routine has access to it. The advantage to this is that your StateStore implementation should not require any locking for most use cases. When processing asynchronously, great care should be taken to avoid interacting with `EventContext.Store()` as other processing may be acting upon it. Even if store locking is implemented, data race conditions may still occur. The provided implementations *partially* shield your application from this condition.
 
-**Important Note!**  If you are using an async processor, all events for a given key must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
+**Important Note!**  If you are using an async processor that writes to a StateStore, all events for a given key must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
 
-#### AsyncJobScheduler
+### AsyncJobScheduler
 
 The [AsyncJobScheduler](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#AsyncJobScheduler) works by breaking up your Kafka partition into it's constituent keys and creating a separate processing queue for each. Each key will be processed sequentially as the following diagram shows (where [key]@[partition offset]):
 
@@ -214,7 +214,11 @@ func main() {
     es.WaitForSignals(nil)
 }
 ```
+<<<<<<< HEAD
 **Imortant!** Re-iterating - if you are using an async processor, all events for a given `key` must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
+=======
+**Imortant!** In this example, we are writing to the StateStore in an asynchronous process. All events for a given `key` must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
+>>>>>>> 71419ef (Async processing documentation. Fixing syncBatcher implementation so that empty batches are still processed in the correct sequence.)
 
 ##### Example 4 - Chaining AsynJobSchedulers:
 
@@ -297,5 +301,121 @@ func main() {
     streams.RegisterEventType(es, myRecordTransformer, app.handleEvent, "myEvent")
     es.ConsumeEvents()
     es.WaitForSignals(nil)
+}
+
+```
+
+### AsyncBatcher
+
+The [AsyncBatcher](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#AsyncBatcher) performs a similar function to the AsyncJobScheduler, but is intended for performing actions for multiple events at a time. This is particularly useful when interacting with systems which provide a batch API (such as SQS or DynamoDB). It's important to not that the AsyncBatcher will group together [BatchItems](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#BatchItem) that span mutliple Kafka partitions and keys, but a given key can not exists in concurrent executions at any given point in time. As such, multiple events for the same key *can* be executed in the same batch execution. Example:
+
+##### Example 5 - AsynBatcher DDB Write
+
+```go
+
+var ddbBatcher *streams.AsyncBatcher[myStore, string, myData]
+
+func handleEvent(ctx *streams.EventContext[myStore], event myEvent) streams.ExecutionState {
+    batchItems := streams.NewBatchItems(ctx, myEvent.key(), batchComplete).Add(createItemsForEvent())
+    batchItems.UserData = myEvent // will be available to batchComplete if needed 
+    entry := ctx.Store().update(myEvent)
+    ctx.RecordChange(entry)
+    return ddbBatcher.Add(batchItems)
+}
+
+
+func writeToDDB(items []*streams.BatchItem[string, myData]) {
+    // the following logic is very naive
+    // but shows how you can transmit the results of the call
+    res, err := batchWriteDDBItems(items)
+    for _, item := range items {
+        item.Err = err
+        item.UserData = res
+    }
+}
+
+func batchComplete(ctx *streams.EventContext[myStore], batch *streams.Batch[myStore, string, myData]) streams.ExecutionState {
+    // Here we can look at the results in batch.Items and take any necessary actions
+    return streams.Complete
+}
+
+func main() {
+    es := sak.Must(streams.NewEventSource(myConfig, myStoreFactory, nil))
+    maxBatchSize := 50 // each DDB batch will contain no more than 50 items
+    maxConcurrentBatches := 100 // the maximum number of concurrent requests to DDB
+    accumulationDelay := 10 * time.Millisecond // the maximum amount of time an execution will wait to accumulate BatchItems
+    ddbBatcher = streams.NewAsyncBatcher(es, writeToDDB, maxBatchSize, maxConcurrentBatches, accumulationDelay)
+
+    streams.RegisterEventType(es, myRecordTransformer, handleEvent, "myEvent")
+    es.ConsumeEvents()
+    es.WaitForSignals(nil)
+}
+
+```
+
+It is important to note that the same StateStore caveats for AsynJobScheduler also apply to the AsyncBatcher. If, in the above example, we wrote to the StateStore in the `batchComplete` function, all incoming events would need to pass through the batch mechanism. This can be accomplished by simply adding an empty with the correct key set to the AsynBatcher. As in:
+
+```go
+
+asynBatcher.Add(streams.NewBatchItems(ctx, key, finalizeCallback))
+```
+
+Also note that if `len(batchItems.Items())` exceeds the capacity of a batch execution (according to `maxBatchSize`), `batchItems.Items()` will be executed across multiple batches in the order in which they were added. The batch callback will be invoked only after all items for the event have been executed. 
+
+`BatchItems.Key()` does not need to match StateStore key; but if it does not match, writing to the StateStore after the batch call could result in a data race. There are exceptions to this however. In the above example, we are writing items to a DDB table. What if these executions fail? In this case we can use the StateStore to record the errors and retry later with an Interjector. We can modify Example 5 as follows:
+
+##### Example 6 - AsynBatcher DDB Write, Error Handling
+```go
+
+func handleEvent(ctx *streams.EventContext[myStore], event myEvent) streams.ExecutionState {
+    // note that the key we are using for batching includes a prefix
+    batchKey := "ddbTableName:" + myEvent.key()
+    batchItems := streams.NewBatchItems(ctx, batchKey, batchComplete).Add(createItemsForEvent())
+    batchItems.UserData = myEvent // will be available to batchComplete if needed 
+    entry := ctx.Store().update(myEvent)
+    ctx.RecordChange(entry)
+    return ddbBatcher.Add(batchItems)
+}
+
+
+func batchComplete(ctx *streams.EventContext[myStore], batch *streams.BatchItems[myStore, string, myData]) streams.ExecutionState {
+    // Here we can look at the results in batch.Items and take any necessary actions
+    for _, item := range batch.Items() {
+        if item.Err != nil {
+            entry := ctx.Store().recordDDBWriteError(batch.Key(), time.Now().Add(time.Second), item)
+            ctx.Forward(entry)
+        }
+    }
+    return streams.Complete
+}
+```
+
+Since `batch.Key()` does not intersect with `event.key()`, the 2 entries in the state store do not conflict, and there is no data race. In out event source initialization, we could schedule an Interjector to periodically poll the state store for DDB errors and retry the DDB writes. The interjector might look like this:
+
+##### Example 7 - AsynBatcher DDB Write, Error Handling Interjector
+```go
+
+func retryDDBWrites(ctx streams.EventContext[myStore], when time.Time) streams.ExecutionState {
+    // we'll delete the erros here as batchError function will re-insert of the retry fails.
+    // it might be a good idea to limit the number error records returned/deleted as well
+    errorRecords := ctx.Store().getAndDeleteErrorRecordsBefore(when)
+    if len(errorRecords) == 0 {
+        return streams.Complete
+    }
+    batchItems := streams.NewBatchItem(ctx, "ddbRetry", batchComplete)
+    for _, errorRecord := range errorRecords {
+        // note errorRecord.batchKey() should be  "ddbTableName:" + myEvent.key() from handleEvent
+        batchItems.AddWithKey(errorRecord.batchKey(), errorRecord.item())
+    }
+    return ddbBatcher.Add(batchItems)
+}
+
+func main() {
+    // eventStore initialization...
+    
+    // let's run through our error records every second with a 100ms jitter
+    eventSource.ScheduleInterjection(retryDDBWrites, time.Second, 100 * time.Millisecond)
+    eventSource.ConsumeEvents()
+    eventSource.WaitForSignals(nil)
 }
 ```

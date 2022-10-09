@@ -21,13 +21,10 @@ import (
 )
 
 func TestAsyncBatching(t *testing.T) {
-	var items [20]BatchItem[int, int64]
+	var items [20]int64
 
 	for i := range items {
-		items[i] = BatchItem[int, int64]{
-			Key:   0, // all items have the same key
-			Value: int64(i),
-		}
+		items[i] = int64(i)
 	}
 	done := make(chan struct{})
 	jobChan := make(chan asyncJob[*intStore]) // create a dummy channel to absorb the event
@@ -36,10 +33,10 @@ func TestAsyncBatching(t *testing.T) {
 			asyncJobs: jobChan,
 		},
 	}
-	batch := NewBatch(ec,
-		func(_ *EventContext[*intStore], b *Batch[*intStore, int, int64]) ExecutionState {
-			if len(b.Items) != 20 {
-				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.Items), 20)
+	batch := NewBatchItems(ec, 0,
+		func(_ *EventContext[*intStore], b *BatchItems[*intStore, int, int64]) ExecutionState {
+			if len(b.items) != 20 {
+				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.items), 20)
 			}
 			close(done)
 			return Incomplete
@@ -88,7 +85,7 @@ func TestAsyncBatching(t *testing.T) {
 		t.Errorf("incorrect execution count. actual %d, expected: %d", executionCount, 2)
 	}
 
-	for _, item := range batch.Items {
+	for _, item := range batch.items {
 		userData := item.UserData.(int64)
 		if item.Value+userData != 0 {
 			t.Errorf("invalid userdata: %v, %v", userData, item.Value)
@@ -105,10 +102,10 @@ func TestAsyncNoopBatching(t *testing.T) {
 			asyncJobs: jobChan,
 		},
 	}
-	batch := NewBatch(ec,
-		func(_ *EventContext[*intStore], b *Batch[*intStore, int, int64]) ExecutionState {
-			if len(b.Items) != 0 {
-				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.Items), 0)
+	batch := NewBatchItems(ec, 0,
+		func(_ *EventContext[*intStore], b *BatchItems[*intStore, int, int64]) ExecutionState {
+			if len(b.items) != 0 {
+				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.items), 0)
 			}
 			close(done)
 			return Complete
