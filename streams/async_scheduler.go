@@ -106,6 +106,8 @@ After the the scheduling is complete for a key/value,
 Scheduler will call the `processor` callback defined at initialization.
 The output of this call will be passed to the `finalizer` callback.
 If `finalizer` is nil, the event is marked as `Complete`, once the job is finished, ignoring any errors.
+
+For detailed examples, see https://github.com/aws/go-kafka-event-source/docs/asynprocessing.md
 */
 type AsyncJobScheduler[S StateStore, K comparable, V any] struct {
 	runStatus         sak.RunStatus

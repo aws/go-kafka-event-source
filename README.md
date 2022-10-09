@@ -19,7 +19,7 @@ If you are using AWS MSK, you may find the provided "msk" module useful for clus
 go get github.com/aws/go-kafka-event-source/msk
 ```
 
-For API documentation on these modules, see https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams and https://pkg.go.dev/github.com/aws/go-kafka-event-source/msk.
+For API documentation on these modules, see https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams and https://pkg.go.dev/github.com/aws/go-kafka-event-source/msk. The [docs](./docs) folder also contains detailed examples.
 
 ## Project Status
 
