@@ -214,11 +214,8 @@ func main() {
     es.WaitForSignals(nil)
 }
 ```
-<<<<<<< HEAD
-**Imortant!** Re-iterating - if you are using an async processor, all events for a given `key` must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
-=======
+
 **Imortant!** In this example, we are writing to the StateStore in an asynchronous process. All events for a given `key` must go through the async processor - even if it is a noop. Otherwise events may be processed out of order.
->>>>>>> 71419ef (Async processing documentation. Fixing syncBatcher implementation so that empty batches are still processed in the correct sequence.)
 
 ##### Example 4 - Chaining AsynJobSchedulers:
 
