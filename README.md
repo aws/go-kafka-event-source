@@ -25,7 +25,8 @@ For API documentation on these modules, see https://pkg.go.dev/github.com/aws/go
 
 GKES is usable in it's current form but there are a few things slated for the very near future. This library is being used by AWS for internal workloads.
 
-- [ ] More comprehensive documentation, specifically around StateStores and async processing - In Progress
+- [X] More comprehensive documentation for and async processing - [Complete](./docs/asyncprocessing.md) 
+- [ ] More comprehensive documentation for StateStores - In Progress
 - [ ] Per topic partitioner support for EventContext.Forward() and Producer/BatchProducer APIs, Currently, only the Java default murmur2 partitioner is supported - In Progress
 - [ ] Instructions for testing locally - In progress
 - [ ] More robust functional tests for async processing. Though this is tested extenisively using a local test harness, this process needs to be more repeatable and available to contributors - In progress
