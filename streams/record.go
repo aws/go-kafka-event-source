@@ -238,6 +238,14 @@ func (r *Record) ToKafkaRecord() *kgo.Record {
 	return (*kgo.Record)(sak.Noescape(unsafe.Pointer(&r.kRecord)))
 }
 
+// A convenience function for unit testing. This method should not need to be invoked in a production code.
+func (r *Record) AsIncomingRecord() IncomingRecord {
+	return IncomingRecord{
+		kRecord:    r.kRecord,
+		recordType: r.recordType,
+	}
+}
+
 func (r *Record) Error() error {
 	return r.err
 }
