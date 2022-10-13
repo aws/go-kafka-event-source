@@ -304,7 +304,7 @@ func main() {
 
 ### AsyncBatcher
 
-The [AsyncBatcher](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#AsyncBatcher) performs a similar function to the AsyncJobScheduler, but is intended for performing actions for multiple events at a time. This is particularly useful when interacting with systems which provide a batch API (such as SQS or DynamoDB). It's important to not that the AsyncBatcher will group together [BatchItems](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#BatchItem) that span mutliple Kafka partitions and keys, but a given key can not exists in concurrent executions at any given point in time. As such, multiple events for the same key *can* be executed in the same batch execution. Example:
+The [AsyncBatcher](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#AsyncBatcher) performs a similar function to the AsyncJobScheduler, but is intended for performing actions for multiple events at a time. This is particularly useful when interacting with systems which provide a batch API (such as SQS or DynamoDB). It's important to note that the AsyncBatcher will group together [BatchItems](https://pkg.go.dev/github.com/aws/go-kafka-event-source/streams#BatchItem) that span mutliple Kafka partitions and keys, but a given key can not exist in more than one execution at any given point in time. As such, multiple events for the same key *can* be executed in the same batch execution. Example:
 
 ##### Example 5 - AsynBatcher DDB Write
 
@@ -359,7 +359,7 @@ asynBatcher.Add(streams.NewBatchItems(ctx, key, finalizeCallback))
 
 Also note that if `len(batchItems.Items())` exceeds the capacity of a batch execution (according to `maxBatchSize`), `batchItems.Items()` will be executed across multiple batches in the order in which they were added. The batch callback will be invoked only after all items for the event have been executed. 
 
-`BatchItems.Key()` does not need to match StateStore key; but if it does not match, writing to the StateStore after the batch call could result in a data race. There are exceptions to this however. In the above example, we are writing items to a DDB table. What if these executions fail? In this case we can use the StateStore to record the errors and retry later with an Interjector. We can modify Example 5 as follows:
+`BatchItems.Key()` does not need to match StateStore key; but if it does match, writing to the StateStore after the batch call could result in a data race. There are exceptions to this however. In the above example, we are writing items to a DDB table. What if these executions fail? In this case we can use the StateStore to record the errors and retry later with an Interjector. We can modify Example 5 as follows:
 
 ##### Example 6 - AsynBatcher DDB Write, Error Handling
 ```go
@@ -387,7 +387,7 @@ func batchComplete(ctx *streams.EventContext[myStore], batch *streams.BatchItems
 }
 ```
 
-Since `batch.Key()` does not intersect with `event.key()`, the 2 entries in the state store do not conflict, and there is no data race. In out event source initialization, we could schedule an Interjector to periodically poll the state store for DDB errors and retry the DDB writes. The interjector might look like this:
+Since `batch.Key()` does not intersect with `event.key()`, the 2 entries in the state store do not conflict, and there is no data race. In our event source initialization, we could schedule an Interjector to periodically poll the state store for DDB errors and retry the DDB writes. The interjector might look like this:
 
 ##### Example 7 - AsynBatcher DDB Write, Error Handling Interjector
 ```go
