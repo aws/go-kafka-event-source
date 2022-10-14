@@ -61,12 +61,13 @@ const (
 
 // An implementation of [github.com/aws/go-kafka-event-source/streams.Cluster].
 type MskCluster struct {
-	clusterName string
-	client      MskClient
-	authType    AuthType
-	tlsConfig   *tls.Config
-	awsConfig   aws.Config
-	scram       scram.Auth
+	clusterName   string
+	client        MskClient
+	authType      AuthType
+	tlsConfig     *tls.Config
+	awsConfig     aws.Config
+	scram         scram.Auth
+	clientOptions []kgo.Opt
 }
 
 // Returns the default AWS client config with default region of `region`. DefaultClientConfig panics on errors.
@@ -100,11 +101,22 @@ func NewMskClusterWithClientConfig(clusterName string, authType AuthType, awsCon
 	}
 }
 
-// Used primarily for MutualTLS authentication.
+// Used primarily for MutualTLS authentication. If you need any configuration beyond the certificate itself, or simply switch on TLS,
+// you'll need to use WithClientOptions instead. See WithClientOptions for an example
 //
 //	cluster := msk.NewMskCluster("MyCluster", msk.MutualTLS, "us-east-1").WithTlsConfig(myMutualTlsConfig)
 func (c *MskCluster) WithTlsConfig(tlsConfig *tls.Config) *MskCluster {
 	c.tlsConfig = tlsConfig
+	return c
+}
+
+// Used to supply additional kgo client options. Caution: Options supplied here will override any set by MskCluster.
+// This call replaces any client options previously set. Usage:
+//
+//	cluster := msk.NewMskCluster("MyCluster", msk.MutualTLS, "us-east-1").WithClientOptions(
+//		kgo.Dialer((&tls.Dialer{Config: tlsConfig, NetDialer: &net.Dialer{KeepAlive: 20 * time.Minute}}).DialContext))
+func (c *MskCluster) WithClientOptions(opts ...kgo.Opt) *MskCluster {
+	c.clientOptions = opts
 	return c
 }
 
@@ -138,6 +150,7 @@ func (c *MskCluster) Config() (opts []kgo.Opt, err error) {
 		// MSK only supports SHA512
 		opts = append(opts, kgo.SASL(c.scram.AsSha512Mechanism()))
 	}
+	opts = append(opts, c.clientOptions...)
 	return
 }
 
