@@ -174,7 +174,7 @@ type AsyncBatcher[S any, K comparable, V any] struct {
 // Create a new AsynBatcher. Each invocation of `executor` will have a maximum of `maxBatchSize` items.
 // No more than `maxConcurrentBatches` will be executing at any given time. AsynBatcher will accumulate items until `delay` has elapsed,
 // or `maxBatchSize` items have been received.
-func NewAsyncBatcher[S StateStore, K comparable, V any](eventSource *EventSource[S], executor BatchExecutor[K, V], maxBatchSize, maxConcurrentBatches int, delay time.Duration) *AsyncBatcher[S, K, V] {
+func NewAsyncBatcher[S StateStore, K comparable, V any](executor BatchExecutor[K, V], maxBatchSize, maxConcurrentBatches int, delay time.Duration) *AsyncBatcher[S, K, V] {
 	executors := make([]*asyncBatchExecutor[S, K, V], maxConcurrentBatches)
 	for i := range executors {
 		executors[i] = &asyncBatchExecutor[S, K, V]{

@@ -114,7 +114,10 @@ func (sc SimpleCluster) Config() ([]kgo.Opt, error) {
 func NewClient(cluster Cluster, options ...kgo.Opt) (*kgo.Client, error) {
 	configOptions := []kgo.Opt{kgo.WithLogger(kgoLogger),
 		kgo.ProducerBatchCompression(kgo.NoCompression()),
-		kgo.FetchIsolationLevel(kgo.ReadCommitted())}
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+		kgo.ProducerLinger(5 * time.Millisecond),
+		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil)))}
+
 	clusterOpts, err := cluster.Config()
 	if err != nil {
 		return nil, err
@@ -177,16 +180,7 @@ func createSource(source *Source) (*Source, error) {
 	sourceTopicAdminClient := kadm.NewClient(sourceTopicClient)
 	eosAdminClient := kadm.NewClient(eosClient)
 	source, err = resolveOrCreateTopics(source, sourceTopicAdminClient, eosAdminClient)
-	// createTopic(sourceTopicAdminClient, source.NumPartitions(),
-	// 	replicationFactorConfig(source), minInSyncConfig(source), DeleteCleanupPolicy, 1, source.Topic())
 
-	// createTopic(eosAdminClient, commitLogPartitionsConfig(source),
-	// 	replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.9, source.CommitLogTopicNameForGroupId())
-
-	// createTopic(eosAdminClient, source.NumPartitions(),
-	// 	replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, source.ChangeLogTopicName())
-
-	// source, err = resolveTopicMetadata(source, sourceTopicAdminClient, eosAdminClient)
 	sourceTopicClient.Close()
 	eosClient.Close()
 	return source, err
@@ -251,7 +245,11 @@ func resolveOrCreateTopics(source *Source, sourceTopicAdminClient, eosAdminClien
 		}
 	}
 
-	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), commitLogName, changLogName)
+	topics := []string{commitLogName}
+	if len(changLogName) > 0 {
+		topics = append(topics, changLogName)
+	}
+	res, err = eosAdminClient.ListTopicsWithInternal(context.Background(), topics...)
 	if err != nil {
 		return nil, err
 	}
@@ -265,20 +263,21 @@ func resolveOrCreateTopics(source *Source, sourceTopicAdminClient, eosAdminClien
 		}
 	}
 
-	if val, ok := res[changLogName]; ok && val.Err == nil {
-		changeLogPartitionCount := len(val.Partitions.Numbers())
-		if changeLogPartitionCount != source.config.NumPartitions {
-			return nil, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
-				changeLogPartitionCount, source.config.NumPartitions)
-		}
-	} else {
-		err = createTopic(eosAdminClient, source.NumPartitions(),
-			replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, changLogName)
-		if err != nil {
-			return nil, err
+	if len(changLogName) > 0 {
+		if val, ok := res[changLogName]; ok && val.Err == nil {
+			changeLogPartitionCount := len(val.Partitions.Numbers())
+			if changeLogPartitionCount != source.config.NumPartitions {
+				return nil, fmt.Errorf("change log partitition count (%d) does not match source topic partition count (%d)",
+					changeLogPartitionCount, source.config.NumPartitions)
+			}
+		} else {
+			err = createTopic(eosAdminClient, source.NumPartitions(),
+				replicationFactorConfig(source), minInSyncConfig(source), CompactCleanupPolicy, 0.5, changLogName)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
-
 	return source, nil
 }
 

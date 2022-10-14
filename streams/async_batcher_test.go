@@ -15,10 +15,26 @@
 package streams
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type mockAsyncCompleter struct {
+	expectedState ExecutionState
+	done          chan struct{}
+	t             *testing.T
+}
+
+func (m mockAsyncCompleter) AsyncComplete(job AsyncJob[intStore]) {
+	if state := job.Finalize(); state != m.expectedState {
+		m.t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, m.expectedState)
+	}
+	if m.done != nil {
+		m.done <- struct{}{}
+	}
+}
 
 func TestAsyncBatching(t *testing.T) {
 	var items [20]int64
@@ -27,30 +43,20 @@ func TestAsyncBatching(t *testing.T) {
 		items[i] = int64(i)
 	}
 	done := make(chan struct{})
-	jobChan := make(chan asyncJob[*intStore]) // create a dummy channel to absorb the event
-	ec := &EventContext[*intStore]{
-		asynCompleter: asyncCompleter[*intStore]{
-			asyncJobs: jobChan,
-		},
-	}
+	ec := MockEventContext[intStore](context.TODO(), nil, "", NewIntStore(ntp(0, "")), mockAsyncCompleter{
+		expectedState: Incomplete,
+		done:          done,
+		t:             t,
+	}, nil)
+
 	batch := NewBatchItems(ec, 0,
-		func(_ *EventContext[*intStore], b *BatchItems[*intStore, int, int64]) ExecutionState {
+		func(_ *EventContext[intStore], b *BatchItems[intStore, int, int64]) ExecutionState {
 			if len(b.items) != 20 {
 				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.items), 20)
 			}
-			close(done)
 			return Incomplete
 		},
 	).Add(items[:]...)
-
-	// simulate tyhe async completion logic of partitionWorker
-	go func() {
-		job := <-jobChan
-		state := job.finalize()
-		if state != Incomplete {
-			t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, Incomplete)
-		}
-	}()
 
 	executionCount := int64(0)
 	lastProcessed := int64(-1)
@@ -71,7 +77,7 @@ func TestAsyncBatching(t *testing.T) {
 
 		}
 	}
-	batcher := NewAsyncBatcher[*intStore](nil, executor, 10, 10, 0)
+	batcher := NewAsyncBatcher[intStore](executor, 10, 10, 0)
 	batcher.Add(batch)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -94,37 +100,25 @@ func TestAsyncBatching(t *testing.T) {
 }
 
 func TestAsyncNoopBatching(t *testing.T) {
-
 	done := make(chan struct{})
-	jobChan := make(chan asyncJob[*intStore]) // create a dummy channel to absorb the event
-	ec := &EventContext[*intStore]{
-		asynCompleter: asyncCompleter[*intStore]{
-			asyncJobs: jobChan,
-		},
-	}
+	ec := MockEventContext[intStore](context.TODO(), nil, "", NewIntStore(ntp(0, "")), mockAsyncCompleter{
+		expectedState: Complete,
+		done:          done,
+		t:             t,
+	}, nil)
 	batch := NewBatchItems(ec, 0,
-		func(_ *EventContext[*intStore], b *BatchItems[*intStore, int, int64]) ExecutionState {
+		func(_ *EventContext[intStore], b *BatchItems[intStore, int, int64]) ExecutionState {
 			if len(b.items) != 0 {
 				t.Errorf("incorrect number of items. actual: %d, expected: %d", len(b.items), 0)
 			}
-			close(done)
 			return Complete
 		},
 	)
 
-	// simulate tyhe async completion logic of partitionWorker
-	go func() {
-		job := <-jobChan
-		state := job.finalize()
-		if state != Complete {
-			t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, Complete)
-		}
-	}()
-
 	executor := func(batch []*BatchItem[int, int64]) {
 		t.Errorf("executor should not have been executed")
 	}
-	batcher := NewAsyncBatcher[*intStore](nil, executor, 10, 10, 0)
+	batcher := NewAsyncBatcher[intStore](executor, 10, 10, 0)
 	batcher.Add(batch)
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()

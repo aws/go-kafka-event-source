@@ -41,16 +41,20 @@ const (
 	unknownType ExecutionState = 3
 )
 
-type asyncJob[T any] struct {
-	ctx      *EventContext[T]
-	finalize func() ExecutionState
+type AsyncJob[T any] struct {
+	ctx       *EventContext[T]
+	finalizer func() ExecutionState
+}
+
+func (aj AsyncJob[T]) Finalize() ExecutionState {
+	return aj.finalizer()
 }
 
 type asyncCompleter[T any] struct {
-	asyncJobs chan asyncJob[T]
+	asyncJobs chan AsyncJob[T]
 }
 
-func (ac asyncCompleter[T]) asyncComplete(j asyncJob[T]) {
+func (ac asyncCompleter[T]) AsyncComplete(j AsyncJob[T]) {
 	ac.asyncJobs <- j
 }
 
@@ -96,7 +100,7 @@ func newPartitionWorker[T StateStore](
 		stopped:        make(chan struct{}),
 		maxPending:     make(chan struct{}, eosProducer.maxPendingItems()),
 		asyncCompleter: asyncCompleter[T]{
-			asyncJobs: make(chan asyncJob[T], asyncSize),
+			asyncJobs: make(chan AsyncJob[T], asyncSize),
 		},
 		partitionInput:         make(chan []*kgo.Record, 4),
 		eventInput:             make(chan *EventContext[T], recordsInputSize),
@@ -251,8 +255,8 @@ func (pw *partitionWorker[T]) waitForRevocation() {
 	pw.revokedSignal <- struct{}{}
 }
 
-func (pw *partitionWorker[T]) processAsyncJob(job asyncJob[T]) {
-	if job.finalize() == Complete {
+func (pw *partitionWorker[T]) processAsyncJob(job AsyncJob[T]) {
+	if job.Finalize() == Complete {
 		job.ctx.complete()
 		<-pw.maxPending
 	}

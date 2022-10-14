@@ -7,7 +7,7 @@ require (
 	github.com/google/btree v1.1.2 // direct
 	github.com/google/uuid v1.3.0 // direct
 	github.com/json-iterator/go v1.1.12 // direct
-	github.com/twmb/franz-go v1.7.1 // direct
+	github.com/twmb/franz-go v1.8.0 // direct
 	github.com/twmb/franz-go/pkg/kadm v1.2.1 // direct
 	github.com/twmb/franz-go/pkg/kmsg v1.2.0 // direct
 )

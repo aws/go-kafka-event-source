@@ -145,6 +145,7 @@ func testTopicConfig() EventSourceConfig {
 	return EventSourceConfig{
 		GroupId:           topicName + "_group",
 		Topic:             topicName,
+		StateStoreTopic:   topicName + "_store",
 		NumPartitions:     10,
 		ReplicationFactor: 1,
 		MinInSync:         1,

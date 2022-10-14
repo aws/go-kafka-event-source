@@ -349,7 +349,7 @@ func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) er
 			// produce a commit record for the first real offset we see
 			commitRecordProduced = true
 			crd := p.commitLog.commitRecord(ec.TopicPartition(), offset)
-			p.produceRecord(ec, crd, nil)
+			p.ProduceRecord(ec, crd, nil)
 		}
 		ec.revocationWaiter.Done()
 	}
@@ -491,9 +491,14 @@ func (p *producerNode[T]) flushRemaining() {
 	}
 }
 
-func (p *producerNode[T]) produceRecord(ec *EventContext[T], record *Record, cb func(*Record, error)) {
+func (p *producerNode[T]) ProduceRecord(ec *EventContext[T], record *Record, cb func(*Record, error)) {
 	p.produceLock.Lock()
 	p.produceCnt++
+	// set the timestamp if not set
+	// we want to capture any time that this record spends in the recordsToProduce buffer
+	if record.kRecord.Timestamp.IsZero() {
+		record.kRecord.Timestamp = time.Now()
+	}
 	if p.partitionOwners.owned(ec.partition(), p) {
 		p.produceKafkaRecord(record, cb)
 	} else {

@@ -33,8 +33,8 @@ var ErrPartitionNotReady = errors.New("partition is not ready")
 // EventSource provides an abstraction over raw kgo.Record/streams.IncomingRecord consumption, allowing the use of strongly typed event handlers.
 // One of the key features of the EventSource is to allow for the routing of events based off of a type header. See RegisterEventType for details.
 type EventSource[T StateStore] struct {
-	root              *eventProcessorWrapper[T]
-	tail              *eventProcessorWrapper[T]
+	rootProcessor     *eventProcessorWrapper[T]
+	tailProcessor     *eventProcessorWrapper[T]
 	stateStoreFactory StateStoreFactory[T]
 	defaultProcessor  EventProcessor[T, IncomingRecord]
 	consumer          *eventSourceConsumer[T]
@@ -338,8 +338,8 @@ func (ec *EventSource[T]) createChangeLogReceiver(tp TopicPartition) T {
 // Starts the event processing by invoking registered processors. If no processors exist for record.recordTpe, the defaultProcessor will be invoked.
 func (es *EventSource[T]) handleEvent(ctx *EventContext[T], record IncomingRecord) ExecutionState {
 	state := unknownType
-	if es.root != nil {
-		state = es.root.process(ctx, record)
+	if es.rootProcessor != nil {
+		state = es.rootProcessor.process(ctx, record)
 	}
 	if state == unknownType {
 		state = es.defaultProcessor(ctx, record)
@@ -357,14 +357,21 @@ type IncomingRecordDecoder[V any] func(IncomingRecord) (V, error)
 type EventProcessor[T any, V any] func(*EventContext[T], V) ExecutionState
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
+// Must not be called after `EventSource.ConsumeEvents()`
 func RegisterEventType[T StateStore, V any](es *EventSource[T], transformer IncomingRecordDecoder[V], eventProcessor EventProcessor[T, V], eventType string) {
 	ep := newEventProcessorWrapper(eventType, transformer, eventProcessor, es.source.deserializationErrorHandler())
-	if es.root == nil {
-		es.root, es.tail = ep, ep
+	if es.rootProcessor == nil {
+		es.rootProcessor, es.tailProcessor = ep, ep
 	} else {
-		es.tail.next = ep
-		es.tail = ep
+		es.tailProcessor.next = ep
+		es.tailProcessor = ep
 	}
+}
+
+// A convenience method to avoid chick-egg scenarios when initializing an EventSource.
+// Must not be called after `EventSource.ConsumeEvents()`
+func RegisterDefaultHandler[T StateStore](es *EventSource[T], recordProcessor EventProcessor[T, IncomingRecord], eventType string) {
+	es.defaultProcessor = recordProcessor
 }
 
 type eventExecutor[T any] interface {

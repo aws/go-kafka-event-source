@@ -23,22 +23,81 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+type AsyncCompleter[T any] interface {
+	AsyncComplete(AsyncJob[T])
+}
+
+type EventContextProducer[T any] interface {
+	ProduceRecord(*EventContext[T], *Record, func(*Record, error))
+}
+
 // Contains information about the current event. Is passed to EventProcessors and Interjections
 type EventContext[T any] struct {
 	// we're going to keep a reference to the partition worker context
 	// so we can skip over any buffered events in the EOSProducer
 	ctx              context.Context
-	producerChan     chan *producerNode[T]
-	producer         *producerNode[T]
+	producerChan     chan EventContextProducer[T]
+	producer         EventContextProducer[T]
 	revocationWaiter *sync.WaitGroup
 	next             *EventContext[T]
 	prev             *EventContext[T]
 	input            IncomingRecord
-	asynCompleter    asyncCompleter[T]
+	asyncCompleter   AsyncCompleter[T]
 	changeLog        changeLogData[T]
 	done             chan struct{}
 	topicPartition   TopicPartition
 	interjection     *interjection[T]
+}
+
+// A convenience function for creating unit tests for an EventContext from an incoming Kafka Record. All arguments other than `ctx`
+// are optional unless you are interacting with those resources. For example, if you call EventContext.Forward/RecordChange, you will need to provide a mock producer.
+// If you run the EventContext through an async process, you will need to provide a mock AsyncCompleter.
+//
+//	func TestMyHandler(t *testing.T) {
+//		eventContext := streams.MockEventContext(context.TODO(), mockRecord(), "storeTopic", mockStore(), mockCompleter(), mockProducer())
+//		if err := testMyHandler(eventContext, eventContext.Input()); {
+//			t.Error(err)
+//		}
+//	}
+func MockEventContext[T any](ctx context.Context, input *Record, stateStoreTopc string, store T, asyncCompleter AsyncCompleter[T], producer EventContextProducer[T]) *EventContext[T] {
+	ec := &EventContext[T]{
+		ctx: ctx,
+		changeLog: changeLogData[T]{
+			topic: stateStoreTopc,
+			store: store,
+		},
+		asyncCompleter: asyncCompleter,
+		producer:       producer,
+	}
+	if input != nil {
+		ec.input = input.AsIncomingRecord()
+		ec.topicPartition = input.TopicPartition()
+	}
+	return ec
+}
+
+// A convenience function for creating unit tests for an EventContext from an interjection.  All arguments other than `ctx`
+// are optional unless you are interacting with those resources. For example, if you call EventContext.Forward/RecordChange, you will need to provide a mock producer.
+// If you run the EventContext through an async process, you will need to provide a mock AsyncCompleter.
+//
+//	func TestMyInterjector(t *testing.T) {
+//		eventContext := streams.MockInterjectionEventContext(context.TODO(), myTopicPartition, "storeTopic", mockStore(), mockCompleter(), mockProducer())
+//		if err := testMyInterjector(eventContext, time.Now()); {
+//			t.Error(err)
+//		}
+//	}
+func MockInterjectionEventContext[T any](ctx context.Context, topicPartition TopicPartition, stateStoreTopc string, store T, asyncCompleter AsyncCompleter[T], producer EventContextProducer[T]) *EventContext[T] {
+	ec := &EventContext[T]{
+		topicPartition: topicPartition,
+		changeLog: changeLogData[T]{
+			topic: stateStoreTopc,
+			store: store,
+		},
+		asyncCompleter: asyncCompleter,
+		producer:       producer,
+		interjection:   &interjection[T]{},
+	}
+	return ec
 }
 
 func (ec *EventContext[T]) isRevoked() bool {
@@ -71,7 +130,7 @@ func (ec *EventContext[T]) partition() int32 {
 // Forwards records to the transactional producer for your EventSource.
 func (ec *EventContext[T]) Forward(records ...*Record) {
 	for _, record := range records {
-		ec.producer.produceRecord(ec, record, nil)
+		ec.producer.ProduceRecord(ec, record, nil)
 	}
 }
 
@@ -86,7 +145,7 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 				WithTopic(ec.changeLog.topic).
 				WithPartition(ec.topicPartition.Partition)
 
-			ec.producer.produceRecord(ec, record, nil)
+			ec.producer.ProduceRecord(ec, record, nil)
 		} else {
 			log.Warnf("EventContext.RecordChange was called but consumer is not stateful")
 		}
@@ -98,9 +157,9 @@ func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 // regardless of error state. `finalize` does no accept any arguments, so you're callback should encapsulate
 // any pertinent data needed for processing. If you are using [	], [AsyncJobScheduler] or [BatchProducer], you should not need to interact with this method directly.
 func (ec *EventContext[T]) AsyncJobComplete(finalize func() ExecutionState) {
-	ec.asynCompleter.asyncComplete(asyncJob[T]{
-		ctx:      ec,
-		finalize: finalize,
+	ec.asyncCompleter.AsyncComplete(AsyncJob[T]{
+		ctx:       ec,
+		finalizer: finalize,
 	})
 }
 
@@ -122,12 +181,12 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 	input := newIncomingRecord(record)
 	ec := &EventContext[T]{
 		ctx:              ctx,
-		producerChan:     make(chan *producerNode[T], 1),
+		producerChan:     make(chan EventContextProducer[T], 1),
 		topicPartition:   input.TopicPartition(),
 		changeLog:        changeLog,
 		input:            input,
 		interjection:     nil,
-		asynCompleter:    pw.asyncCompleter,
+		asyncCompleter:   pw.asyncCompleter,
 		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
 		done:             make(chan struct{}),
 	}
@@ -137,11 +196,11 @@ func newEventContext[T StateStore](ctx context.Context, record *kgo.Record, chan
 func newInterjectionContext[T StateStore](ctx context.Context, interjection *interjection[T], topicPartition TopicPartition, changeLog changeLogData[T], pw *partitionWorker[T]) *EventContext[T] {
 	ec := &EventContext[T]{
 		ctx:              ctx,
-		producerChan:     make(chan *producerNode[T], 1),
+		producerChan:     make(chan EventContextProducer[T], 1),
 		topicPartition:   topicPartition,
 		interjection:     interjection,
 		changeLog:        changeLog,
-		asynCompleter:    pw.asyncCompleter,
+		asyncCompleter:   pw.asyncCompleter,
 		revocationWaiter: (*sync.WaitGroup)(sak.Noescape(unsafe.Pointer(&pw.revocationWaiter))),
 		done:             make(chan struct{}),
 	}

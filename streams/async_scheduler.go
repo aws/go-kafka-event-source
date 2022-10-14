@@ -165,8 +165,18 @@ var WideNetworkConfig = SchedulerConfig{
 	MaxConcurrentKeys: 10000,
 }
 
+// Creates an AsyncJobScheduler which is tied to the RunStatus of EventSource.
 func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	eventSource *EventSource[S],
+	processor AsyncJobProcessor[K, V],
+	finalizer AsyncJobFinalizer[S, K, V],
+	config SchedulerConfig) (*AsyncJobScheduler[S, K, V], error) {
+	return NewAsyncJobScheduler(eventSource.runStatus.Fork(), processor, finalizer, config)
+}
+
+// Creates an AsyncJobScheduler which will continue to run while runStatus.Running()
+func NewAsyncJobScheduler[S StateStore, K comparable, V any](
+	runStatus sak.RunStatus,
 	processor AsyncJobProcessor[K, V],
 	finalizer AsyncJobFinalizer[S, K, V],
 	config SchedulerConfig) (*AsyncJobScheduler[S, K, V], error) {
@@ -184,7 +194,7 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	}
 	maxConcurrentKeys := config.concurrentKeys()
 	ap := &AsyncJobScheduler[S, K, V]{
-		runStatus:         eventSource.runStatus.Fork(),
+		runStatus:         runStatus,
 		processor:         processor,
 		finalizer:         finalizer,
 		workerQueueDepth:  int64(config.WorkerQueueDepth),
@@ -223,6 +233,7 @@ func (ap *AsyncJobScheduler[S, K, V]) newQueue() interface{} {
 	}
 }
 
+// Schedules the value for processing in order by key. The finalizer will be invoked once processing is complete.
 func (ap *AsyncJobScheduler[S, K, V]) Schedule(ec *EventContext[S], key K, value V) ExecutionState {
 	if ap.isClosed() {
 		return Complete
@@ -300,8 +311,7 @@ func (ap *AsyncJobScheduler[S, K, V]) SetWorkerQueueDepth(size int) {
 }
 
 /*
-note: this does not increase the number of go-routines processiung work,
-only the max number of keys we will accept work for before we block the incoming data stream
+Dynamically update the MaxConcurrentKeys for the current scheduler.
 */
 func (ap *AsyncJobScheduler[S, K, V]) SetMaxConcurrentKeys(size int) {
 	// prevent any action on workerChannel until this operation is complete

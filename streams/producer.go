@@ -18,7 +18,6 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -43,10 +42,9 @@ type Producer struct {
 }
 
 // Create a new Producer. Destination provides cluster connect information.
+// Defaults options are: kgo.ProducerLinger(5 * time.Millisecond) and
+// kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil)))
 func NewProducer(destination Destination, opts ...kgo.Opt) *Producer {
-	opts = append(opts, kgo.ProducerLinger(5*time.Millisecond),
-		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
-	)
 	client, err := NewClient(destination.Cluster, opts...)
 	if err != nil {
 		panic(err)
@@ -93,13 +91,8 @@ type BatchProducer[S any] struct {
 	destination Destination
 }
 
-func NewBatchProducer[S any](destination Destination) *BatchProducer[S] {
-	client, err := NewClient(
-		destination.Cluster,
-		kgo.ProducerLinger(5*time.Millisecond),
-		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
-	)
-
+func NewBatchProducer[S any](destination Destination, opts ...kgo.Opt) *BatchProducer[S] {
+	client, err := NewClient(destination.Cluster, opts...)
 	if err != nil {
 		panic(err)
 	}

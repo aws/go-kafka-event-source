@@ -147,6 +147,10 @@ func (r *Record) Offset() int64 {
 	return r.kRecord.Offset
 }
 
+func (r *Record) TopicPartition() TopicPartition {
+	return ntp(r.kRecord.Partition, r.kRecord.Topic)
+}
+
 func (r *Record) WriteKey(bs ...[]byte) {
 	for _, b := range bs {
 		r.keyBuffer.Write(b)
@@ -264,6 +268,8 @@ func (r *Record) Release() {
 	recordPool.Release(r)
 }
 
+// ChangeLogEntry represents a Kafka record which wil be produced to the StateStore for your EventSource.
+// Note that you can not set a topic or partition on a ChangeLogEntry. These values are managed by GKES.
 type ChangeLogEntry struct {
 	record *Record
 }
@@ -317,8 +323,9 @@ func (cle ChangeLogEntry) WithEntryType(entryType string) ChangeLogEntry {
 }
 
 type OptionalPartitioner struct {
-	manualPartitioner kgo.Partitioner
-	keyPartitioner    kgo.Partitioner
+	manualPartitioner  kgo.Partitioner
+	defaultPartitioner kgo.Partitioner
+	topicPartitioners  map[string]kgo.Partitioner
 }
 
 type optionalTopicPartitioner struct {
@@ -326,17 +333,31 @@ type optionalTopicPartitioner struct {
 	keyTopicPartitioner    kgo.TopicPartitioner
 }
 
-func NewOptionalPartitioner(p kgo.Partitioner) OptionalPartitioner {
+// A kgo compatible partitioner which respects Record partitions that are manually assigned.
+// If the record partition is [AutoAssign], the provided kgo.Partitioner will be used for partition assignment.
+// Note: [NewRecord] will return a record with a partition of [AutoAssign].
+func NewOptionalPartitioner(partitioner kgo.Partitioner) OptionalPartitioner {
+	return NewOptionalPerTopicPartitioner(partitioner, map[string]kgo.Partitioner{})
+}
+
+// A kgo compatible partitioner which respects Record partitions that are manually assigned.
+// Allows you to set different partitioner per topic. If a topic is encountered that has not been defined, defaultPartitioner will be used.
+func NewOptionalPerTopicPartitioner(defaultPartitioner kgo.Partitioner, topicPartitioners map[string]kgo.Partitioner) OptionalPartitioner {
 	return OptionalPartitioner{
-		manualPartitioner: kgo.ManualPartitioner(),
-		keyPartitioner:    p,
+		manualPartitioner:  kgo.ManualPartitioner(),
+		defaultPartitioner: defaultPartitioner,
+		topicPartitioners:  topicPartitioners,
 	}
 }
 
 func (op OptionalPartitioner) ForTopic(topic string) kgo.TopicPartitioner {
+	partitioner := op.defaultPartitioner
+	if p, ok := op.topicPartitioners[topic]; ok {
+		partitioner = p
+	}
 	return optionalTopicPartitioner{
 		manualTopicPartitioner: op.manualPartitioner.ForTopic(topic),
-		keyTopicPartitioner:    op.keyPartitioner.ForTopic(topic),
+		keyTopicPartitioner:    partitioner.ForTopic(topic),
 	}
 }
 
@@ -351,10 +372,18 @@ func (otp optionalTopicPartitioner) Partition(r *kgo.Record, n int) int {
 	return otp.manualTopicPartitioner.Partition(r, n)
 }
 
+// A shortcut method for createing a ChangeLogEntry with a json endcoded value.
+//
+//	cle := CreateJsonChangeLogEntry(myValue).WithKeyString(myKey).WithEntryType(myType)
+//	eventContext.RecordChange(cle)
 func CreateJsonChangeLogEntry[T any](item T) (ChangeLogEntry, error) {
 	return CreateChangeLogEntry[T](item, JsonCodec[T]{})
 }
 
+// A shortcut method for createing a ChangeLogEntry with a value endcoded using the provided codec.
+//
+//	cle := CreateChangeLogEntry(myValue, myCodec).WithKeyString(myKey).WithEntryType(myType)
+//	eventContext.RecordChange(cle)
 func CreateChangeLogEntry[T any](item T, codec Codec[T]) (ChangeLogEntry, error) {
 	cle := NewChangeLogEntry()
 	return cle, codec.Encode(cle.ValueWriter(), item)

@@ -64,7 +64,7 @@ GKES provides conventions for asynchronously processing events on the same Kafka
 The [AsyncBatcher] and [AsyncJobScheduler] allow you to split a TopicPartition into sub-streams by key,
 ensuring all events for a partitcular key are processed in order, allowing for parallel processing on a given TopicPartition.
 
-There are caveats to asynchronous processing. [TODO: explanation of caveats]
+For more details, see [Async Processing Examples]
 
 # High-Throughput/Low-Latency EOS
 
@@ -102,5 +102,6 @@ Kudos to [kgo]!
 
 [Event Sourcing applications]: https://martinfowler.com/eaaDev/EventSourcing.html
 [kgo]: https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo
+[Async Processing Examples]: https://github.com/aws/go-kafka-event-source/blame/main/docs/asyncprocessing.md
 */
 package streams
