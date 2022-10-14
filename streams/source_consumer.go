@@ -75,7 +75,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		kgo.OnPartitionsAssigned(sc.partitionsAssigned),
 		kgo.OnPartitionsRevoked(sc.partitionsRevoked),
 		kgo.SessionTimeout(6 * time.Second),
-		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 		kgo.FetchMaxWait(time.Second),
 		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign)}
 
