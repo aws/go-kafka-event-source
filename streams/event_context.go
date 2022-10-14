@@ -127,7 +127,12 @@ func (ec *EventContext[T]) partition() int32 {
 	return ec.topicPartition.Partition
 }
 
-// Forwards records to the transactional producer for your EventSource.
+// Forwards produces records on the transactional producer for your EventSource.
+// If the transaction fails, records produced in this fashion will not be visible to other consumers who have a fetch isolation of `read_commited`.
+// An isolation level of `read_commited“ is required for Exactly Once Semantics
+//
+// It is important to note that GKES uses a Record pool. After the transaction has completed for this record, it is returned to the pool for reuse.
+// Your application should not hold on to references to the Record(s) after Forward has been invoked.
 func (ec *EventContext[T]) Forward(records ...*Record) {
 	for _, record := range records {
 		ec.producer.ProduceRecord(ec, record, nil)
@@ -137,6 +142,11 @@ func (ec *EventContext[T]) Forward(records ...*Record) {
 // Forwards records to the transactional producer for your EventSource. When you add an item to your StateStore,
 // you must call this method for that change to be recorded in the stream. This ensures that when the TopicPartition for this change
 // is tansferred to a new consumer, it will also have this change.
+// If the transaction fails, records produced in this fashion will not be visible to other consumers who have a fetch isolation of `read_commited`.
+// An isolation level of `read_commited“ is required for Exactly Once Semantics
+//
+// It is important to note that GKES uses a Record pool. After the transaction has completed for this record, it is returned to the pool for reuse.
+// Your application should not hold on to references to the ChangeLogEntry(s) after RecordChange has been invoked.
 func (ec *EventContext[T]) RecordChange(entries ...ChangeLogEntry) {
 	for _, entry := range entries {
 		if len(ec.changeLog.topic) > 0 {

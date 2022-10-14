@@ -47,8 +47,7 @@ type EventSource[T StateStore] struct {
 }
 
 /*
-	Create an EventSource.
-
+Create an EventSource.
 `defaultProcessor` will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header.
 `additionalClientoptions` allows you to add additional options to the underlying kgo.Client. There are some restrictions here however. The following options are reserved:
 
@@ -363,15 +362,6 @@ func (es *EventSource[T]) handleEvent(ctx *EventContext[T], record IncomingRecor
 	}
 	return state
 }
-
-// A callback invoked when a new TopicPartition has been assigned to a EventSource. Your callback should return an empty StateStore.
-type StateStoreFactory[T StateStore] func(TopicPartition) T
-
-// A callback invoked when a new record has been received from the EventSource.
-type IncomingRecordDecoder[V any] func(IncomingRecord) (V, error)
-
-// A callback invoked when a new record has been received from the EventSource, after it has been transformed via IncomingRecordTransformer.
-type EventProcessor[T any, V any] func(*EventContext[T], V) ExecutionState
 
 // Registers eventType with a transformer (usuall a codec.Codec) with the supplied EventProcessor.
 // Must not be called after `EventSource.ConsumeEvents()`

@@ -40,9 +40,6 @@ type ErrorContext interface {
 	Input() (IncomingRecord, bool)
 }
 
-type DeserializationErrorHandler func(ec ErrorContext, eventType string, err error) ErrorResponse
-type TxnErrorHandler func(err error) ErrorResponse
-
 // The default DeserializationErrorHandler. Simply logs the error and returns [Continue].
 func DefaultDeserializationErrorHandler(ec ErrorContext, eventType string, err error) ErrorResponse {
 	log.Errorf("failed to deserialize record for %+v, offset: %d, eventType: %s,error: %v", ec.TopicPartition(), ec.Offset(), eventType, err)

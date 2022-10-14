@@ -91,6 +91,16 @@ type BatchProducer[S any] struct {
 	destination Destination
 }
 
+// Provides similar functionality to [AsyncBatcher], but in the context of producing Kafka records.
+// Since the underlying Kafka producer already batches in an ordered fashion, there is no need to add the overhead of the [AsyncBatcher].
+// Records produced by a BatchProducer are not transactional, and therefore duplicates could be created.
+// The use cases for the BatchProducer vs EventContext.Forward are as follows:
+//
+// - The topic you are producing to is not on the same Kafka cluster as your EventSource
+//
+// - Duplicates are OK and you do not want to wait for the transaction to complete before the consumers of these records can see the data (lower latency)
+//
+// If your use case does not fall into the above buckets, it is recommended to just use [EventConetxt.Forward]
 func NewBatchProducer[S any](destination Destination, opts ...kgo.Opt) *BatchProducer[S] {
 	client, err := NewClient(destination.Cluster, opts...)
 	if err != nil {
@@ -102,8 +112,6 @@ func NewBatchProducer[S any](destination Destination, opts ...kgo.Opt) *BatchPro
 	}
 	return p
 }
-
-type BatchProducerCallback[S any] func(eventContext *EventContext[S], records []*Record, userData any) ExecutionState
 
 type produceBatcher[S any] struct {
 	ctx      *EventContext[S]
@@ -136,6 +144,11 @@ func (b *produceBatcher[S]) executeCallback() ExecutionState {
 	return state
 }
 
+// Produces `records` and invokes BatchProducerCallback once all records have been produced or have errored out.
+// If there was an error in producing, it can be retrieved with record.Error()
+//
+// It is important to note that GKES uses a Record pool. After the transaction has completed for this record, it is returned to the pool for reuse.
+// Your application should not hold on to references to the Record(s) after BatchProducerCallback has been invoked.
 func (p *BatchProducer[S]) Produce(ec *EventContext[S], records []*Record, cb BatchProducerCallback[S], userData any) ExecutionState {
 	b := &produceBatcher[S]{
 		ctx:      ec,

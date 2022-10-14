@@ -36,12 +36,6 @@ func (ajc asyncJobContainer[S, K, V]) invokeFinalizer() ExecutionState {
 	return ajc.finalizer(ajc.eventContext, ajc.key, ajc.value, ajc.err)
 }
 
-// A handler invoked when a previously scheduled AsyncJob should be performed.
-type AsyncJobProcessor[K comparable, V any] func(K, V) error
-
-// A callback invoked when a previously scheduled AsyncJob has been completed.
-type AsyncJobFinalizer[T any, K comparable, V any] func(*EventContext[T], K, V, error) ExecutionState
-
 type worker[S any, K comparable, V any] struct {
 	capacity  int
 	workQueue *asyncItemQueue[asyncJobContainer[S, K, V]]

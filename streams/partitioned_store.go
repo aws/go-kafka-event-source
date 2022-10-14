@@ -56,7 +56,6 @@ func (sp changeLogPartition[T]) revokedInternal() {
 	sp.release()
 }
 
-type TopicPartitionCallback[T any] func(TopicPartition) T
 type partitionedChangeLog[T StateStore] struct {
 	data           map[int32]changeLogPartition[T]
 	factory        TopicPartitionCallback[T]

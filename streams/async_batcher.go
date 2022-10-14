@@ -56,8 +56,6 @@ type BatchItems[S any, K comparable, V any] struct {
 	completed    int64
 }
 
-type BatchCallback[S any, K comparable, V any] func(*EventContext[S], *BatchItems[S, K, V]) ExecutionState
-
 // Creates a container for BatchItems and ties them to an EventContext. Once all items in BatchItems.Items() have been executed,
 // the provided BatchCallback will be executed.
 func NewBatchItems[S any, K comparable, V any](ec *EventContext[S], key K, cb BatchCallback[S, K, V]) *BatchItems[S, K, V] {
@@ -115,8 +113,6 @@ func (b *BatchItems[S, K, V]) AddWithKey(key K, values ...V) *BatchItems[S, K, V
 	}
 	return b
 }
-
-type BatchExecutor[K comparable, V any] func(batch []*BatchItem[K, V])
 
 type asyncBatchState int
 

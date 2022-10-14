@@ -20,9 +20,6 @@ import (
 	"time"
 )
 
-// Defines the method signature needed by the EventSource to perform a stream interjection. See EventSource.Interject.
-type Interjector[T any] func(*EventContext[T], time.Time) ExecutionState
-
 // Container for an Interjector.
 type interjection[T any] struct {
 	interjector      Interjector[T]

@@ -19,7 +19,6 @@ import "time"
 const TxnCommitOperation = "TxnCommit"
 const PartitionPreppedOperation = "PartitionPrepped"
 
-type MetricsHandler func(Metric)
 type Metric struct {
 	StartTime      time.Time
 	ExecuteTime    time.Time

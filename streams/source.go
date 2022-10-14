@@ -19,8 +19,6 @@ import (
 	"sync/atomic"
 )
 
-type SourcePartitionEventHandler func(*Source, int32)
-
 type EventSourceState uint64
 
 const (
