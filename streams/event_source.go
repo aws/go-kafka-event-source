@@ -46,8 +46,25 @@ type EventSource[T StateStore] struct {
 	stopOnce          sync.Once
 }
 
-// Create an EventSource.
-// `defaultProcessor` will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header.
+/*
+	Create an EventSource.
+
+`defaultProcessor` will be invoked if a suitable EventProcessor can not be found, or the IncomingRecord has no RecordType header.
+`additionalClientoptions` allows you to add additional options to the underlying kgo.Client. There are some restrictions here however. The following options are reserved:
+
+	kgo.Balancers
+	kgo.ConsumerGroup
+	kgo.ConsumeTopics
+	kgo.OnPartitionsAssigned
+	kgo.OnPartitionsRevoked
+	kgo.AdjustFetchOffsetsFn
+
+In addition, if you wish to set a TopicPartitioner for use in EventContext.Forward(), the partitioner must be of the supplied [OptionalPartitioner] as StateStore entries
+require manual partitioning and are produced on the same client as used by the EventContext for producing records. The default partitioner is initialized as follows,
+which should give parity with the canonical Java murmur2 partitioner:
+
+	kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil)))
+*/
 func NewEventSource[T StateStore](sourceConfig EventSourceConfig, stateStoreFactory StateStoreFactory[T], defaultProcessor EventProcessor[T, IncomingRecord],
 	additionalClientOptions ...kgo.Opt) (*EventSource[T], error) {
 	source, err := CreateSource(sourceConfig)
