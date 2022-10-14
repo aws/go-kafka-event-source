@@ -27,7 +27,7 @@ GKES is usable in it's current form but there are a few things slated for the ve
 
 - [X] More comprehensive documentation for and async processing - [Complete](./docs/asyncprocessing.md) 
 - [ ] More comprehensive documentation for StateStores - In Progress
-- [ ] Per topic partitioner support for EventContext.Forward() and Producer/BatchProducer APIs, Currently, only the Java default murmur2 partitioner is supported - In Progress
+- [X] Per topic partitioner support for EventContext.Forward() and Producer/BatchProducer APIs, Currently, only the Java default murmur2 partitioner is supported - Complete
 - [ ] Instructions for testing locally - In progress
 - [ ] More robust functional tests for async processing. Though this is tested extenisively using a local test harness, this process needs to be more repeatable and available to contributors - In progress
 
