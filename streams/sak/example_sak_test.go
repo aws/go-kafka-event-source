@@ -89,23 +89,29 @@ func ExamplePool() {
 }
 
 func ExampleRunStatus() {
-	parent := sak.NewRunStatus(context.Background())
-	child1 := parent.Fork()
-	child2 := parent.Fork()
+	parent := sak.NewRunStatus(context.Background()).WithValue("name", "parent")
+	child1 := parent.Fork().WithValue("name", "child1") // will override "name" of parent
+	child2 := parent.Fork()                             // will inherit "name" from parent
 
-	child1.Halt()
+	child1.Halt() // child1 halts but parent continues to run
 
 	fmt.Println(parent.Running())
 	fmt.Println(child1.Running())
 	fmt.Println(child2.Running())
 
-	parent.Halt()
+	parent.Halt() // all RunStatus are halted
 
 	fmt.Println(parent.Running())
 	fmt.Println(child2.Running())
+	fmt.Println(parent.Ctx().Value("name"))
+	fmt.Println(child1.Ctx().Value("name"))
+	fmt.Println(child2.Ctx().Value("name"))
 	// Output: true
 	// false
 	// true
 	// false
 	// false
+	// parent
+	// child1
+	// parent
 }

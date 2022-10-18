@@ -84,6 +84,21 @@ func kafkaScriptCommand(program, command string) *exec.Cmd {
 	return exec.Command("sh", kafkaProgramScript, kafkaWorkingDir, program, command)
 }
 
+type mockAsyncCompleter struct {
+	expectedState ExecutionState
+	done          chan struct{}
+	t             *testing.T
+}
+
+func (m mockAsyncCompleter) AsyncComplete(job AsyncJob[intStore]) {
+	if state := job.Finalize(); state != m.expectedState {
+		m.t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, m.expectedState)
+	}
+	if m.done != nil {
+		m.done <- struct{}{}
+	}
+}
+
 type intStoreItem struct {
 	Key, Value int
 }
@@ -102,6 +117,14 @@ func intStoreItemLess(a, b intStoreItem) bool {
 
 type intStore struct {
 	tree *btree.BTreeG[intStoreItem]
+}
+
+func decodeIntStoreItem(r IncomingRecord) (item intStoreItem, err error) {
+	item.Key = sak.Must(IntCodec.Decode(r.Key()))
+	if len(r.Value()) > 0 {
+		item.Value = sak.Must(IntCodec.Decode(r.Value()))
+	}
+	return
 }
 
 func NewIntStore(TopicPartition) intStore {

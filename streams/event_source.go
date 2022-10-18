@@ -263,20 +263,24 @@ func (es *EventSource[T]) Stop() {
 	es.stopOnce.Do(func() {
 		go func() {
 			<-es.consumer.leave()
-			es.runStatus.Halt()
+			es.runStatus.Halt() // will close all sub processes (commitLog, stateStoreConsumer)
 			select {
 			case es.done <- struct{}{}:
 			default:
 			}
 		}()
 	})
+}
 
+func (es *EventSource[T]) ForkRunStatus() sak.RunStatus {
+	return es.runStatus.Fork()
 }
 
 // Immediately stops the underlying consumer *kgo.Client by invoking sc.client.Close()
 // This has the effect of immediately surrendering all owned partitions, then closing the client.
 // If you are using an IncrementalGroupRebalancer, this can be used as a force quit.
 func (es *EventSource[T]) StopNow() {
+	es.runStatus.Halt()
 	es.consumer.stop()
 	select {
 	case es.done <- struct{}{}:

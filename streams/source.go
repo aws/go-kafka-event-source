@@ -15,8 +15,12 @@
 package streams
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 type EventSourceState uint64
@@ -25,6 +29,16 @@ const (
 	Healthy EventSourceState = iota
 	Unhealthy
 )
+
+const consumerPollFetchTimeout = 5 * time.Second
+
+// a convenience function for polling the consumer to save repetitive code
+func pollConsumer(client *kgo.Client) (context.Context, kgo.Fetches) {
+	ctx, cancel := context.WithTimeout(context.Background(), consumerPollFetchTimeout)
+	f := client.PollFetches(ctx)
+	cancel()
+	return ctx, f
+}
 
 type EventSourceConfig struct {
 	// The group id for the underlying Kafka consumer group.

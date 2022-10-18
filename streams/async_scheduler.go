@@ -165,7 +165,7 @@ func CreateAsyncJobScheduler[S StateStore, K comparable, V any](
 	processor AsyncJobProcessor[K, V],
 	finalizer AsyncJobFinalizer[S, K, V],
 	config SchedulerConfig) (*AsyncJobScheduler[S, K, V], error) {
-	return NewAsyncJobScheduler(eventSource.runStatus.Fork(), processor, finalizer, config)
+	return NewAsyncJobScheduler(eventSource.ForkRunStatus(), processor, finalizer, config)
 }
 
 // Creates an AsyncJobScheduler which will continue to run while runStatus.Running()

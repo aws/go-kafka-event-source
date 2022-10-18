@@ -21,21 +21,6 @@ import (
 	"time"
 )
 
-type mockAsyncCompleter struct {
-	expectedState ExecutionState
-	done          chan struct{}
-	t             *testing.T
-}
-
-func (m mockAsyncCompleter) AsyncComplete(job AsyncJob[intStore]) {
-	if state := job.Finalize(); state != m.expectedState {
-		m.t.Errorf("incorrect ExecutionState. actual %v, expected: %v", state, m.expectedState)
-	}
-	if m.done != nil {
-		m.done <- struct{}{}
-	}
-}
-
 func TestAsyncBatching(t *testing.T) {
 	var items [20]int64
 

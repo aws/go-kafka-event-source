@@ -58,14 +58,14 @@ func topicPartitionFromBytes(b []byte) (tp TopicPartition) {
 	return
 }
 
-func newEosCommitLog(source *Source, numPartitions int) *eosCommitLog {
+func newEosCommitLog(runStatus sak.RunStatus, source *Source, numPartitions int) *eosCommitLog {
 	cl := &eosCommitLog{
 		watermarks:    make(map[int32]int64),
 		pendingSyncs:  make(map[string]*sync.WaitGroup),
 		numPartitions: int32(numPartitions),
 		topic:         source.CommitLogTopicNameForGroupId(),
 	}
-	cl.changeLog = NewGlobalChangeLog(source.stateCluster(), cl, numPartitions, cl.topic, CompactCleanupPolicy)
+	cl.changeLog = NewGlobalChangeLogWithRunStatus(runStatus, source.stateCluster(), cl, numPartitions, cl.topic, CompactCleanupPolicy)
 	return cl
 }
 
@@ -143,10 +143,10 @@ func (cl *eosCommitLog) Watermark(tp TopicPartition) int64 {
 	return -1
 }
 
-func (cl *eosCommitLog) Stop() {
-	cl.changeLog.Stop()
-	cl.changeLog.client.Close()
-}
+// func (cl *eosCommitLog) Stop() {
+// 	cl.changeLog.Stop()
+// 	cl.changeLog.client.Close()
+// }
 
 func (cl *eosCommitLog) Start() {
 	cl.changeLog.Start()

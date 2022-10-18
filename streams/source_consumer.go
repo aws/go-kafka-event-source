@@ -46,7 +46,7 @@ type eventSourceConsumer[T StateStore] struct {
 // Creates a new eventSourceConsumer.
 // `eventSource` must be a fully initialized EventSource.
 func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additionalClientOptions ...kgo.Opt) (*eventSourceConsumer[T], error) {
-	cl := newEosCommitLog(eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
+	cl := newEosCommitLog(eventSource.ForkRunStatus(), eventSource.source, int(commitLogPartitionsConfig(eventSource.source)))
 	var partitionedStore *partitionedChangeLog[T]
 	source := eventSource.source
 	partitionedStore = newPartitionedChangeLog(eventSource.createChangeLogReceiver, source.StateStoreTopicName())
@@ -107,7 +107,7 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		}
 	}
 	sc.client = client
-	sc.stateStoreConsumer = mewStateStoreConsumer[T](source)
+	sc.stateStoreConsumer = newStateStoreConsumer[T](eventSource.ForkRunStatus(), source)
 	if err != nil {
 		return nil, err
 	}
@@ -271,9 +271,7 @@ func (sc *eventSourceConsumer[T]) start() {
 	go sc.commitLog.Start()
 	sc.commitLog.syncAll()
 	for {
-		ctx, cancel := context.WithTimeout(sc.ctx, 10*time.Second)
-		f := sc.client.PollFetches(ctx)
-		cancel()
+		ctx, f := pollConsumer(sc.client)
 		if f.IsClientClosed() {
 			log.Infof("client closed for group: %v", sc.source.GroupId())
 			return
@@ -397,7 +395,5 @@ func (sc *eventSourceConsumer[T]) leave() <-chan struct{} {
 // Immediately stops the consumer, leaving the consumer group abruptly.
 func (sc *eventSourceConsumer[T]) stop() {
 	sc.client.Close()
-	sc.commitLog.Stop()
-	sc.stateStoreConsumer.stop()
 	log.Infof("left group: %v", sc.source.GroupId())
 }

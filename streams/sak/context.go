@@ -36,14 +36,25 @@ func (rs RunStatus) Ctx() context.Context {
 	return rs.ctx
 }
 
+// Creates a new RunStatus by adding key/value to the underlying Context. This is semantically different than Fork as the RunStatus
+// returned here does not get a new context.CancelFunc, so calling Halt on the returned RunStatus will also halt the receiver.
+func (rs RunStatus) WithValue(key, value any) RunStatus {
+	return RunStatus{
+		ctx:    context.WithValue(rs.ctx, key, value),
+		cancel: rs.cancel,
+	}
+}
+
 func (rs RunStatus) Err() error {
 	return rs.ctx.Err()
 }
 
+// Returns the RunStatus.Ctx().Done()
 func (rs RunStatus) Done() <-chan struct{} {
 	return rs.ctx.Done()
 }
 
+// Returns true if the underlying Context has neither timed out or has been canceled.
 func (rs RunStatus) Running() bool {
 	return rs.ctx.Err() == nil
 }
@@ -53,6 +64,7 @@ func (rs RunStatus) Halt() {
 }
 
 // Creates a new child RunStatus, using the current RunStatus.Ctx() as a parent.
+// The newly created RunStatus get's a new context.CancelFunc. Calling Halt on the returned RunStatus will not Halt the parent.
 // The equivalent of calling:
 //
 //	NewRunStatus(rs.Ctx())

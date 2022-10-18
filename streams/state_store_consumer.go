@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -191,6 +192,7 @@ func (ssp *stateStorePartition[T]) handleRecordsAndContinue(records []*kgo.Recor
 }
 
 type stateStoreConsumer[T StateStore] struct {
+	runStatus  sak.RunStatus
 	partitions map[int32]*stateStorePartition[T]
 	source     *Source
 	client     *kgo.Client
@@ -198,7 +200,7 @@ type stateStoreConsumer[T StateStore] struct {
 	topic      string
 }
 
-func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] {
+func newStateStoreConsumer[T StateStore](runStatus sak.RunStatus, source *Source) *stateStoreConsumer[T] {
 	partitionCount := int32(source.config.NumPartitions)
 	stateStorePartitions := make(map[int32]*stateStorePartition[T], partitionCount)
 	assignments := make(map[int32]kgo.Offset, partitionCount)
@@ -235,6 +237,7 @@ func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] 
 		}
 	}
 	ssc := &stateStoreConsumer[T]{
+		runStatus:  runStatus,
 		source:     source,
 		partitions: stateStorePartitions,
 		client:     client,
@@ -245,12 +248,11 @@ func mewStateStoreConsumer[T StateStore](source *Source) *stateStoreConsumer[T] 
 }
 
 func (ssc *stateStoreConsumer[T]) consume() {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		f := ssc.client.PollFetches(ctx)
-		cancel()
+	for ssc.runStatus.Running() {
+		ctx, f := pollConsumer(ssc.client)
 		if f.IsClientClosed() {
-			log.Debugf("client closed")
+			log.Debugf("stateStoreConsumer client closed")
+			ssc.stop()
 			return
 		}
 		for _, fetchErr := range f.Errors() {
@@ -267,6 +269,9 @@ func (ssc *stateStoreConsumer[T]) consume() {
 			}
 		})
 	}
+	ssc.stop()
+	log.Debugf("stateStoreConsumer halted")
+	ssc.client.Close()
 }
 
 func (ssc *stateStoreConsumer[T]) cancelPartition(p int32) {
@@ -293,7 +298,6 @@ func (ssc *stateStoreConsumer[T]) activatePartition(p int32, store changeLogPart
 }
 
 func (ssc *stateStoreConsumer[T]) stop() {
-	ssc.client.Close()
 	ssc.mux.Lock()
 	defer ssc.mux.Unlock()
 	for _, ssp := range ssc.partitions {

@@ -16,8 +16,8 @@ package streams
 
 import (
 	"context"
-	"time"
 
+	"github.com/aws/go-kafka-event-source/streams/sak"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -38,6 +38,7 @@ type ChangeLogReceiver interface {
 type GlobalChangeLog[T ChangeLogReceiver] struct {
 	receiver      T
 	client        *kgo.Client
+	runStatus     sak.RunStatus
 	numPartitions int
 	topic         string
 	cleanupPolicy CleanupPolicy
@@ -45,6 +46,11 @@ type GlobalChangeLog[T ChangeLogReceiver] struct {
 
 // Creates a NewGlobalChangeLog consumer and forward all records to `receiver`.
 func NewGlobalChangeLog[T ChangeLogReceiver](cluster Cluster, receiver T, numPartitions int, topic string, cleanupPolicy CleanupPolicy) GlobalChangeLog[T] {
+	return NewGlobalChangeLogWithRunStatus(sak.NewRunStatus(context.Background()), cluster, receiver, numPartitions, topic, cleanupPolicy)
+}
+
+// Creates a NewGlobalChangeLog consumer and forward all records to `receiver`.
+func NewGlobalChangeLogWithRunStatus[T ChangeLogReceiver](runStatus sak.RunStatus, cluster Cluster, receiver T, numPartitions int, topic string, cleanupPolicy CleanupPolicy) GlobalChangeLog[T] {
 	assignments := make(map[int32]kgo.Offset)
 	for i := 0; i < numPartitions; i++ {
 		assignments[int32(i)] = kgo.NewOffset().AtStart()
@@ -62,6 +68,7 @@ func NewGlobalChangeLog[T ChangeLogReceiver](cluster Cluster, receiver T, numPar
 	}
 
 	return GlobalChangeLog[T]{
+		runStatus:     runStatus,
 		client:        client,
 		receiver:      receiver,
 		numPartitions: numPartitions,
@@ -70,6 +77,7 @@ func NewGlobalChangeLog[T ChangeLogReceiver](cluster Cluster, receiver T, numPar
 	}
 }
 
+// Pauses consumption of all partitions.
 func (cl GlobalChangeLog[T]) PauseAllPartitions() {
 	allPartitions := make([]int32, int(cl.numPartitions))
 	for i := range allPartitions {
@@ -78,10 +86,12 @@ func (cl GlobalChangeLog[T]) PauseAllPartitions() {
 	cl.client.PauseFetchPartitions(map[string][]int32{cl.topic: allPartitions})
 }
 
+// Pauses consumption of a partition.
 func (cl GlobalChangeLog[T]) Pause(partition int32) {
 	cl.client.PauseFetchPartitions(map[string][]int32{cl.topic: {partition}})
 }
 
+// Resumes consumption of a partition at offset.
 func (cl GlobalChangeLog[T]) ResumePartitionAt(partition int32, offset int64) {
 	cl.client.SetOffsets(map[string]map[int32]kgo.EpochOffset{
 		cl.topic: {partition: kgo.EpochOffset{
@@ -93,7 +103,7 @@ func (cl GlobalChangeLog[T]) ResumePartitionAt(partition int32, offset int64) {
 }
 
 func (cl GlobalChangeLog[T]) Stop() {
-	cl.client.Close()
+	cl.runStatus.Halt()
 }
 
 func (cl GlobalChangeLog[T]) Start() {
@@ -101,12 +111,10 @@ func (cl GlobalChangeLog[T]) Start() {
 }
 
 func (cl GlobalChangeLog[T]) consume() {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		f := cl.client.PollFetches(ctx)
-		cancel()
+	for cl.runStatus.Running() {
+		ctx, f := pollConsumer(cl.client)
 		if f.IsClientClosed() {
-			log.Debugf("client closed")
+			log.Debugf("GlobalChangeLog client closed")
 			return
 		}
 		for _, err := range f.Errors() {
@@ -116,6 +124,8 @@ func (cl GlobalChangeLog[T]) consume() {
 		}
 		f.EachRecord(cl.forwardChange)
 	}
+	log.Debugf("GlobalChangeLog halted")
+	cl.client.Close()
 }
 
 func (cl GlobalChangeLog[T]) forwardChange(r *kgo.Record) {
