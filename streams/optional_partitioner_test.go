@@ -49,22 +49,22 @@ func TestOptionalPartitioner(t *testing.T) {
 	partitionerB := partitioner.ForTopic("B")
 	defaultPartitioner := partitioner.ForTopic("UNKNOWN")
 
-	p := partitionerA.Partition(assigned.ToKafkaRecord(), 100)
+	p := partitionerA.Partition(assigned.toKafkaRecord(), 100)
 	if p != 11 {
 		t.Errorf("Incorrect partition. actual: %d, expected: %d", p, 11)
 	}
 
-	p = partitionerA.Partition(unassigned.ToKafkaRecord(), 100)
+	p = partitionerA.Partition(unassigned.toKafkaRecord(), 100)
 	if p != 1 {
 		t.Errorf("Incorrect partition. actual: %d, expected: %d", p, 1)
 	}
 
-	p = partitionerB.Partition(unassigned.ToKafkaRecord(), 100)
+	p = partitionerB.Partition(unassigned.toKafkaRecord(), 100)
 	if p != 2 {
 		t.Errorf("Incorrect partition. actual: %d, expected: %d", p, 2)
 	}
 
-	p = defaultPartitioner.Partition(unassigned.ToKafkaRecord(), 100)
+	p = defaultPartitioner.Partition(unassigned.toKafkaRecord(), 100)
 	if p != 10 {
 		t.Errorf("Incorrect partition. actual: %d, expected: %d", p, 10)
 	}

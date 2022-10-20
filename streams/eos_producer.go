@@ -518,7 +518,7 @@ func (p *producerNode[T]) produceKafkaRecord(record *Record, cb func(*Record, er
 		p.txnContext, p.txnContextCancel = context.WithTimeout(context.Background(), 29*time.Second)
 		p.beginTransaction()
 	}
-	p.client.Produce(p.txnContext, record.ToKafkaRecord(), func(r *kgo.Record, err error) {
+	p.client.Produce(p.txnContext, record.toKafkaRecord(), func(r *kgo.Record, err error) {
 		record.kRecord = *r
 		atomic.AddInt64(&p.byteCount, int64(recordSize(*r)))
 		if err != nil {

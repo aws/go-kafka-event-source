@@ -218,28 +218,54 @@ func (r *Record) WithPartition(partition int32) *Record {
 	return r
 }
 
-func (r *Record) ToKafkaRecord() *kgo.Record {
+func addRecordTypeHeader(recordType string, record *kgo.Record) {
+	if len(recordType) == 0 {
+		return
+	}
+	for _, header := range record.Headers {
+		if header.Key == RecordTypeHeaderKey {
+			return
+		}
+	}
+	record.Headers = append(record.Headers, kgo.RecordHeader{
+		Key:   RecordTypeHeaderKey,
+		Value: []byte(recordType),
+	})
+}
+
+// used internally for producing.
+func (r *Record) toKafkaRecord() *kgo.Record {
+
 	r.kRecord.Key = r.keyBuffer.Bytes()
 
 	// an empty buffer should be a deletion
 	// not sure if nil === empty for these purposes
 	// so leaving nil to be sure
-	if valueBytes := r.valueBuffer.Bytes(); len(valueBytes) != 0 {
-		r.kRecord.Value = valueBytes
+	if r.valueBuffer.Len() > 0 {
+		r.kRecord.Value = r.valueBuffer.Bytes()
 	}
+	addRecordTypeHeader(r.recordType, &r.kRecord)
 
-	if len(r.recordType) > 0 {
-		r.kRecord.Headers = append(r.kRecord.Headers, kgo.RecordHeader{
-			Key:   RecordTypeHeaderKey,
-			Value: []byte(r.recordType),
-		})
-	}
 	// this record is already in the heap (it's part of the recordPool)
 	// since we know that this pointer is guaranteed to outlive any produce calls
 	// in the underlying kgo driver, let's prevent the compiler from escaping this
 	// to the heap (again). this will significantly ease GC pressure
 	// since we are producing a lot of records
 	return (*kgo.Record)(sak.Noescape(unsafe.Pointer(&r.kRecord)))
+}
+
+// Creates a newly allocated kgo.Record. The Key and Value fields are freshly allocated bytes, copied from [streams.Record].
+func (r *Record) ToKafkaRecord() *kgo.Record {
+	record := new(kgo.Record)
+	if r.keyBuffer.Len() > 0 {
+		record.Key = append(record.Key, r.keyBuffer.Bytes()...)
+	}
+
+	if r.valueBuffer.Len() > 0 {
+		record.Value = append(record.Value, r.valueBuffer.Bytes()...)
+	}
+	addRecordTypeHeader(r.recordType, &r.kRecord)
+	return record
 }
 
 // A convenience function for unit testing. This method should not need to be invoked in a production code.
@@ -319,6 +345,11 @@ func (cle ChangeLogEntry) WithValue(value ...[]byte) ChangeLogEntry {
 
 func (cle ChangeLogEntry) WithEntryType(entryType string) ChangeLogEntry {
 	cle.record.recordType = entryType
+	return cle
+}
+
+func (cle ChangeLogEntry) WithHeader(key string, value []byte) ChangeLogEntry {
+	cle.record = cle.record.WithHeader(key, value)
 	return cle
 }
 
