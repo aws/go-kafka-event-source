@@ -271,7 +271,7 @@ func (r *Record) ToKafkaRecord() *kgo.Record {
 // A convenience function for unit testing. This method should not need to be invoked in a production code.
 func (r *Record) AsIncomingRecord() IncomingRecord {
 	return IncomingRecord{
-		kRecord:    r.kRecord,
+		kRecord:    *r.ToKafkaRecord(),
 		recordType: r.recordType,
 	}
 }
