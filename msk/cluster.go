@@ -179,22 +179,28 @@ func (c *MskCluster) getBootstrapBrokers() (brokers []string, err error) {
 	}); err != nil {
 		return
 	}
-	bootstrapString := *res.BootstrapBrokerString
+	var bootstrapString *string
 	switch c.authType {
 	case MutualTLS:
-		bootstrapString = *res.BootstrapBrokerStringTls
+		bootstrapString = res.BootstrapBrokerStringTls
 	case SaslScram:
-		bootstrapString = *res.BootstrapBrokerStringSaslScram
+		bootstrapString = res.BootstrapBrokerStringSaslScram
 	case SaslIam:
-		bootstrapString = *res.BootstrapBrokerStringSaslIam
+		bootstrapString = res.BootstrapBrokerStringSaslIam
 	case PublicMutualTLS:
-		bootstrapString = *res.BootstrapBrokerStringPublicTls
+		bootstrapString = res.BootstrapBrokerStringPublicTls
 	case PublicSaslScram:
-		bootstrapString = *res.BootstrapBrokerStringPublicSaslScram
+		bootstrapString = res.BootstrapBrokerStringPublicSaslScram
 	case PublicSaslIam:
-		bootstrapString = *res.BootstrapBrokerStringPublicSaslIam
+		bootstrapString = res.BootstrapBrokerStringPublicSaslIam
+	default:
+		bootstrapString = res.BootstrapBrokerString
 	}
-	brokers = strings.Split(bootstrapString, ",")
+	if bootstrapString == nil {
+		err = fmt.Errorf("bootstrap brokers is nil, probably due to mismatched auth type between client and cluster")
+		return
+	}
+	brokers = strings.Split(*bootstrapString, ",")
 	return
 }
 
