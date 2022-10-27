@@ -33,6 +33,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -68,6 +69,8 @@ type MskCluster struct {
 	awsConfig     aws.Config
 	scram         scram.Auth
 	clientOptions []kgo.Opt
+	builtOptions  []kgo.Opt
+	mux           sync.Mutex
 }
 
 // Returns the default AWS client config with default region of `region`. DefaultClientConfig panics on errors.
@@ -136,22 +139,30 @@ func (c *MskCluster) WithScramUserPass(user, pass string) *MskCluster {
 // to rertieve the ARN for your specific cluster. Once the arn is retrieved, GetBootstrapBrokers will be called and the appropriate
 // broker addresses for the specified authType will be used to seed the underlying kgo.Client
 func (c *MskCluster) Config() (opts []kgo.Opt, err error) {
-	brokers, err := c.getBootstrapBrokers()
-	if len(brokers) > 0 {
-		opts = append(opts, kgo.SeedBrokers(brokers...))
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	if len(c.builtOptions) == 0 {
+		var brokers []string
+		brokers, err = c.getBootstrapBrokers()
+		if err != nil {
+			return
+		}
+		if len(brokers) > 0 {
+			opts = append(opts, kgo.SeedBrokers(brokers...))
+		}
+		if c.tlsConfig != nil {
+			opts = append(opts, kgo.DialTLSConfig(c.tlsConfig))
+		}
+		switch c.authType {
+		case SaslIam, PublicSaslIam:
+			opts = append(opts, kgo.SASL(kaws.ManagedStreamingIAM(c.saslIamAuth)))
+		case SaslScram, PublicSaslScram:
+			// MSK only supports SHA512
+			opts = append(opts, kgo.SASL(c.scram.AsSha512Mechanism()))
+		}
+		c.builtOptions = append(opts, c.clientOptions...)
 	}
-	if c.tlsConfig != nil {
-		opts = append(opts, kgo.DialTLSConfig(c.tlsConfig))
-	}
-	switch c.authType {
-	case SaslIam, PublicSaslIam:
-		opts = append(opts, kgo.SASL(kaws.ManagedStreamingIAM(c.saslIamAuth)))
-	case SaslScram, PublicSaslScram:
-		// MSK only supports SHA512
-		opts = append(opts, kgo.SASL(c.scram.AsSha512Mechanism()))
-	}
-	opts = append(opts, c.clientOptions...)
-	return
+	return c.builtOptions, nil
 }
 
 // provides the IAM auth mechanism from using aws.Config CredentialsProvider, so as sessions expire, we should be ok.
