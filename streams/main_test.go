@@ -249,11 +249,14 @@ func (p testProducer) deleteMany(t *testing.T, recordType string, count int) {
 	}
 }
 
-func newTestEventSource() (*EventSource[intStore], testProducer, <-chan string) {
+func newTestEventSource(handler func(ec *EventContext[intStore], ir IncomingRecord) ExecutionState) (*EventSource[intStore], testProducer, <-chan string) {
+	if handler == nil {
+		handler = defaultTestHandler
+	}
 	c := make(chan string)
 	cfg := testTopicConfig()
 
-	es := sak.Must(NewEventSource(cfg, NewIntStore, defaultTestHandler))
+	es := sak.Must(NewEventSource(cfg, NewIntStore, handler))
 	producer := NewProducer(es.source.AsDestination())
 
 	RegisterEventType(es, func(ir IncomingRecord) (string, error) {

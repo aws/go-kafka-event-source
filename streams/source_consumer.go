@@ -76,7 +76,8 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		kgo.OnPartitionsRevoked(sc.partitionsRevoked),
 		kgo.SessionTimeout(6 * time.Second),
 		kgo.FetchMaxWait(time.Second),
-		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign)}
+		kgo.AdjustFetchOffsetsFn(sc.adjustOffsetsBeforeAssign),
+	}
 
 	if len(additionalClientOptions) > 0 {
 		opts = append(opts, additionalClientOptions...)
@@ -97,7 +98,6 @@ func newEventSourceConsumer[T StateStore](eventSource *EventSource[T], additiona
 		source.config.EosConfig = eosConfig
 	}
 
-	eosConfig.validate()
 	sc.producerPool = newEOSProducerPool[T](source, cl, eosConfig, client, eventSource.metrics)
 
 	for _, gb := range groupBalancers {

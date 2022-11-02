@@ -16,7 +16,6 @@ package streams
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +27,7 @@ import (
 
 const (
 	noPendingDuration = time.Minute
+	txnAttemptLimit   = 5
 )
 
 type partitionOwners[T any] struct {
@@ -61,18 +61,18 @@ func (po partitionOwners[T]) clear(p int32) {
 	po.mux.Unlock()
 }
 
-// a container that allows to know who produced the records
+// a container that allows to know which consumer partition produced the records
 // needed for txn error conditions while there are revoked partitions
-// allows us to filter recordsToProduce on a retry and exclude partitions that have been revoked
-type pendingRecord struct {
+// allows us to filter records on a retry and exclude partitions that have been revoked
+type eosRecord struct {
 	record    *Record
 	partition int32
 	cb        func(*Record, error)
 }
 
-var pendingRecordPool = sak.NewPool(10, func() []pendingRecord {
-	return make([]pendingRecord, 0)
-}, func(a []pendingRecord) []pendingRecord {
+var eosRecordPool = sak.NewPool(10, func() []eosRecord {
+	return make([]eosRecord, 0)
+}, func(a []eosRecord) []eosRecord {
 	for i := range a {
 		a[i].record = nil
 	}
@@ -95,6 +95,7 @@ type eosProducerPool[T StateStore] struct {
 }
 
 func newEOSProducerPool[T StateStore](source *Source, commitLog *eosCommitLog, cfg EosConfig, commitClient *kgo.Client, metrics chan Metric) *eosProducerPool[T] {
+	cfg.validate()
 	pp := &eosProducerPool[T]{
 		cfg:               cfg,
 		producerNodeQueue: make(chan *producerNode[T], cfg.PoolSize),
@@ -230,7 +231,15 @@ func (pp *eosProducerPool[T]) commit(p *producerNode[T]) error {
 	if pp.startTime.IsZero() {
 		pp.startTime = time.Now()
 	}
-	err := p.commit()
+	var err error
+	for i := 0; i < txnAttemptLimit; i++ {
+		if err = p.maybeRetryTransaction(p.commit()); err != nil {
+			log.Errorf("txn commit failed on attempt: %d,  error: %v", i+1, err)
+			p.txnRetryBackoff(i)
+		} else {
+			break
+		}
+	}
 	if err != nil {
 		log.Errorf("txn commit error: %v", err)
 		return err
@@ -246,13 +255,16 @@ type eventContextDll[T any] struct {
 type producerNode[T any] struct {
 	client            *kgo.Client
 	commitClient      *kgo.Client
+	produceErr        error
+	produceErrLock    sync.Mutex
 	txnContext        context.Context
 	txnContextCancel  func()
 	commitLog         *eosCommitLog
 	next              *producerNode[T]
 	metrics           chan Metric
 	source            *Source
-	recordsToProduce  []pendingRecord
+	pendingRecords    []eosRecord
+	producedRecords   []eosRecord
 	produceCnt        int64
 	byteCount         int64
 	eventContextCnt   int64
@@ -270,15 +282,7 @@ type producerNode[T any] struct {
 }
 
 func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitLog, partitionOwners partitionOwners[T], commitClient *kgo.Client, metrics chan Metric, errorChannel chan error) *producerNode[T] {
-	client := sak.Must(NewClient(
-		source.stateCluster(),
-		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
-		kgo.TransactionalID(uuid.NewString()),
-		kgo.TransactionTimeout(30*time.Second),
-	))
-
-	return &producerNode[T]{
-		client:            client,
+	pn := &producerNode[T]{
 		metrics:           metrics,
 		commitClient:      commitClient,
 		source:            source,
@@ -289,8 +293,11 @@ func newProducerNode[T StateStore](id int, source *Source, commitLog *eosCommitL
 		currentPartitions: make(map[int32]eventContextDll[T]),
 		partitionOwners:   partitionOwners,
 		txnErrorHandler:   source.eosErrorHandler(),
-		recordsToProduce:  pendingRecordPool.Borrow(),
+		pendingRecords:    eosRecordPool.Borrow(),
+		producedRecords:   eosRecordPool.Borrow(),
 	}
+	pn.setupClient()
+	return pn
 }
 
 func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
@@ -323,35 +330,126 @@ func (p *producerNode[T]) addEventContext(ec *EventContext[T]) bool {
 	return startTxn
 }
 
+func (p *producerNode[T]) retryTransaction(err error) error {
+
+	log.Warnf("retrying txn due to err error: %v", err)
+	if err = p.abortCurrentTransaction(); err != nil {
+		log.Errorf("could not abort txn, failing with error: %v", err)
+		return err
+	}
+	p.txnContext = nil
+	p.txnContextCancel = nil
+	p.produceErrLock.Lock()
+	p.produceErr = nil
+	p.produceErrLock.Unlock()
+	p.beginTransaction()
+	p.reproduceRecords()
+	return nil
+}
+
+func (p *producerNode[T]) reproduceRecords() {
+	for _, produced := range p.producedRecords {
+		produced.record.err = nil
+		produced.record.kRecord.ProducerEpoch = 0
+		produced.record.kRecord.ProducerID = 0
+		p.produceKafkaRecord(produced.record, produced.cb)
+	}
+}
+
+func (p *producerNode[T]) abortCurrentTransaction() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return p.client.EndTransaction(ctx, kgo.TryAbort)
+}
+
+func (p *producerNode[T]) setupClient() {
+	p.client = sak.Must(NewClient(
+		p.source.stateCluster(),
+		kgo.RecordPartitioner(NewOptionalPartitioner(kgo.StickyKeyPartitioner(nil))),
+		kgo.TransactionalID(uuid.NewString()),
+		kgo.TransactionTimeout(30*time.Second),
+		kgo.RecordDeliveryTimeout(5*time.Second), // it should never take more than 5 seconds to produce a record
+	))
+}
+
+func (p *producerNode[T]) txnRetryBackoff(attempt int) {
+	time.Sleep(sak.Min((200*time.Millisecond)<<attempt, 5*time.Second))
+	// we need to make a new client in most cases , otherwise we will likely encounter invalid epoch errors
+	p.client.Close()
+	p.setupClient()
+}
+
 func (p *producerNode[T]) beginTransaction() {
-	if err := p.client.BeginTransaction(); err != nil {
-		log.Errorf("could not begin txn err: %v", err)
+	if p.txnContext == nil {
+		var beginTxnErr error
+		for i := 0; i < txnAttemptLimit; i++ {
+			// this is the first record produced, let's start our context with timeout now
+			// for now, setting it to txn timeout - 1 second
+			p.txnContext, p.txnContextCancel = context.WithTimeout(context.Background(), 29*time.Second)
+			if beginTxnErr = p.client.BeginTransaction(); beginTxnErr != nil {
+				p.txnContextCancel()
+				p.txnContext = nil
+				log.Errorf("could not begin txn, attempt: %d, err: %v", i+1, beginTxnErr)
+				p.txnRetryBackoff(i)
+			} else {
+				return
+			}
+		}
+		log.Errorf("could not begin txn, after %d attempts, failing with error: %v", txnAttemptLimit, beginTxnErr)
 		select {
-		case p.errorChannel <- err:
+		case p.errorChannel <- beginTxnErr:
 		default:
 		}
 	}
+
 }
 
 func (p *producerNode[T]) finalizeEventContexts(first, last *EventContext[T]) error {
 	commitRecordProduced := false
 	// we'll now iterate in reverse order - committing the largest offset
+	var finalizeErr error
 	for ec := last; ec != nil; ec = ec.prev {
+		// if pErr := p.producerErr(); pErr != nil {
+		// 	finalizeErr = pErr
+		// } else {
 		select {
 		case <-ec.done:
 		case <-p.txnContext.Done():
-			return fmt.Errorf("txn timeout exceeded. waiting for event context to finish: %+v", ec)
+			finalizeErr = p.txnContext.Err()
 		}
-		offset := ec.Offset()
-		// if less than 0, this is an interjection, no record to commit
-		if !commitRecordProduced && offset >= 0 {
-			// we only want to produce the highest offset, since these are in reverse order
-			// produce a commit record for the first real offset we see
-			commitRecordProduced = true
-			crd := p.commitLog.commitRecord(ec.TopicPartition(), offset)
-			p.ProduceRecord(ec, crd, nil)
+		// }
+		if finalizeErr == nil {
+			offset := ec.Offset()
+			// if less than 0, this is an interjection, no record to commit
+			if !commitRecordProduced && offset >= 0 {
+				// we only want to produce the highest offset, since these are in reverse order
+				// produce a commit record for the first real offset we see
+				commitRecordProduced = true
+				crd := p.commitLog.commitRecord(ec.TopicPartition(), offset)
+				p.produceKafkaRecord(crd, nil)
+			}
 		}
-		ec.revocationWaiter.Done()
+	}
+	return finalizeErr
+}
+
+func (p *producerNode[T]) producerErr() error {
+	p.produceErrLock.Lock()
+	defer p.produceErrLock.Unlock()
+	return p.produceErr
+}
+
+func (p *producerNode[T]) maybeRetryTransaction(err error) error {
+	pErr := p.producerErr()
+	if pErr == nil && err == nil {
+		return nil
+	}
+	if err == nil {
+		err = pErr
+	}
+	if err = p.retryTransaction(err); err != nil {
+		log.Errorf("eos retry error: %v", err)
+		return err
 	}
 	return nil
 }
@@ -360,32 +458,47 @@ func (p *producerNode[T]) commit() error {
 	commitStart := time.Now()
 	p.commitWaiter.Lock()
 	defer p.commitWaiter.Unlock()
-
+	p.beginTransaction()
 	p.produceLock.Lock()
-	p.flushRemaining()
+	p.flushPendingRecords()
 	for tp := range p.currentPartitions {
 		p.partitionOwners.set(tp, p)
 	}
 	p.produceLock.Unlock()
+	var finalizeError error
 	for _, dll := range p.currentPartitions {
 		if err := p.finalizeEventContexts(dll.root, dll.tail); err != nil {
 			log.Errorf("eos finalization error: %v", err)
-			return err
+			// set the first error, but we need to fail on all partitions before we retry to avoid a race condition
+			if finalizeError == nil {
+				finalizeError = err
+			}
 		}
 	}
-	err := p.client.Flush(p.txnContext)
-	if err != nil {
-		log.Errorf("eos producer error: %v", err)
+	if finalizeError != nil {
+		return finalizeError
+	}
+
+	flushCtx, flushCancel := context.WithTimeout(p.txnContext, 5*time.Second)
+	defer flushCancel()
+	if err := p.client.Flush(flushCtx); err != nil {
+		log.Errorf("eos producer flush error: %v", err)
 		return err
 	}
 	action := kgo.TryCommit
 	if p.produceCnt == 0 {
 		action = kgo.TryAbort
 	}
-	err = p.client.EndTransaction(p.txnContext, action)
-	if err != nil {
+	endCtx, endCancel := context.WithTimeout(p.txnContext, 5*time.Second)
+	defer endCancel()
+	if err := p.client.EndTransaction(endCtx, action); err != nil {
 		log.Errorf("eos producer txn error: %v", err)
 		return err
+	}
+	for _, dll := range p.currentPartitions {
+		for ec := dll.tail; ec != nil; ec = ec.prev {
+			ec.revocationWaiter.Done()
+		}
 	}
 	p.clearState(commitStart)
 	return nil
@@ -394,6 +507,7 @@ func (p *producerNode[T]) commit() error {
 func (p *producerNode[T]) clearState(executionTime time.Time) {
 	p.txnContextCancel()
 	p.txnContext = nil
+	p.produceErr = nil
 	for _, ecs := range p.currentPartitions {
 		ecs.root.revocationWaiter.Done()
 		if p.shouldMarkCommit {
@@ -425,8 +539,14 @@ func (p *producerNode[T]) clearState(executionTime time.Time) {
 	p.eventContextCnt = 0
 	p.byteCount = 0
 
-	pendingRecordPool.Release(p.recordsToProduce)
-	p.recordsToProduce = pendingRecordPool.Borrow()
+	for _, eosRecord := range p.producedRecords {
+		eosRecord.record.Release()
+	}
+	eosRecordPool.Release(p.pendingRecords)
+	p.pendingRecords = eosRecordPool.Borrow()
+
+	eosRecordPool.Release(p.producedRecords)
+	p.producedRecords = eosRecordPool.Borrow()
 }
 
 /*
@@ -467,26 +587,20 @@ func (p *producerNode[T]) relinquishOwnership() {
 }
 
 func (p *producerNode[T]) flushPartition(partition int32) {
-	newPends := pendingRecordPool.Borrow()
-	for _, pending := range p.recordsToProduce {
+	newPends := eosRecordPool.Borrow()
+	for _, pending := range p.pendingRecords {
 		if pending.partition != partition {
 			newPends = append(newPends, pending)
 			continue
 		}
 		p.produceKafkaRecord(pending.record, pending.cb)
 	}
-	pendingRecordPool.Release(p.recordsToProduce)
-	p.recordsToProduce = newPends
+	eosRecordPool.Release(p.pendingRecords)
+	p.pendingRecords = newPends
 }
 
-func (p *producerNode[T]) flushRemaining() {
-	if p.txnContext == nil {
-		// this is the first record produced, let's start our context with timeout now
-		// for now, setting it to txn timeout - 1 second
-		p.txnContext, p.txnContextCancel = context.WithTimeout(context.Background(), 29*time.Second)
-		p.beginTransaction()
-	}
-	for _, pending := range p.recordsToProduce {
+func (p *producerNode[T]) flushPendingRecords() {
+	for _, pending := range p.pendingRecords {
 		p.produceKafkaRecord(pending.record, pending.cb)
 	}
 }
@@ -499,10 +613,17 @@ func (p *producerNode[T]) ProduceRecord(ec *EventContext[T], record *Record, cb 
 	if record.kRecord.Timestamp.IsZero() {
 		record.kRecord.Timestamp = time.Now()
 	}
+	// we need to keep track of the records we produced in case we need to perform a retry
+	p.producedRecords = append(p.producedRecords, eosRecord{
+		record:    record,
+		partition: ec.partition(),
+		cb:        cb,
+	})
+
 	if p.partitionOwners.owned(ec.partition(), p) {
 		p.produceKafkaRecord(record, cb)
 	} else {
-		p.recordsToProduce = append(p.recordsToProduce, pendingRecord{
+		p.pendingRecords = append(p.pendingRecords, eosRecord{
 			record:    record,
 			partition: ec.partition(),
 			cb:        cb,
@@ -512,25 +633,25 @@ func (p *producerNode[T]) ProduceRecord(ec *EventContext[T], record *Record, cb 
 }
 
 func (p *producerNode[T]) produceKafkaRecord(record *Record, cb func(*Record, error)) {
-	if p.txnContext == nil {
-		// this is the first record produced, let's start our context with timeout now
-		// for now, setting it to txn timeout - 1 second
-		p.txnContext, p.txnContextCancel = context.WithTimeout(context.Background(), 29*time.Second)
-		p.beginTransaction()
-	}
-	p.client.Produce(p.txnContext, record.toKafkaRecord(), func(r *kgo.Record, err error) {
+	p.beginTransaction()
+	p.client.Produce(p.txnContext, record.asKgoRecord(), func(r *kgo.Record, err error) {
+		// hang on to this error as we will evaluate it later in case we need to restart a transaction
+		record.err = err
 		record.kRecord = *r
-		atomic.AddInt64(&p.byteCount, int64(recordSize(*r)))
-		if err != nil {
-			log.Errorf("%v, record %+v", err, r)
-			select {
-			case p.errorChannel <- err:
-			default:
+		if err == nil {
+			atomic.AddInt64(&p.byteCount, int64(recordSize(*r)))
+		} else {
+			p.produceErrLock.Lock()
+			if p.produceErr == nil {
+				// we'll recordthe first produce error we see so that we can evaluate the need to restart a txn
+				// without iterating through all records
+
+				p.produceErr = err
 			}
+			p.produceErrLock.Unlock()
 		}
 		if cb != nil {
 			cb(record, err)
 		}
-		record.Release()
 	})
 }

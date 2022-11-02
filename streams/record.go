@@ -234,7 +234,7 @@ func addRecordTypeHeader(recordType string, record *kgo.Record) {
 }
 
 // used internally for producing.
-func (r *Record) toKafkaRecord() *kgo.Record {
+func (r *Record) asKgoRecord() *kgo.Record {
 
 	r.kRecord.Key = r.keyBuffer.Bytes()
 
@@ -257,6 +257,8 @@ func (r *Record) toKafkaRecord() *kgo.Record {
 // Creates a newly allocated kgo.Record. The Key and Value fields are freshly allocated bytes, copied from [streams.Record].
 func (r *Record) ToKafkaRecord() *kgo.Record {
 	record := new(kgo.Record)
+	record.Topic = r.kRecord.Topic
+	record.Partition = r.kRecord.Partition
 	if r.keyBuffer.Len() > 0 {
 		record.Key = append(record.Key, r.keyBuffer.Bytes()...)
 	}
@@ -264,7 +266,8 @@ func (r *Record) ToKafkaRecord() *kgo.Record {
 	if r.valueBuffer.Len() > 0 {
 		record.Value = append(record.Value, r.valueBuffer.Bytes()...)
 	}
-	addRecordTypeHeader(r.recordType, &r.kRecord)
+	record.Headers = append(record.Headers, r.kRecord.Headers...)
+	addRecordTypeHeader(r.recordType, record)
 	return record
 }
 
@@ -274,6 +277,12 @@ func (r *Record) AsIncomingRecord() IncomingRecord {
 		kRecord:    *r.ToKafkaRecord(),
 		recordType: r.recordType,
 	}
+}
+
+// Should only be used for unit testing purposes
+func (r *Record) WithError(err error) *Record {
+	r.err = err
+	return r
 }
 
 func (r *Record) Error() error {

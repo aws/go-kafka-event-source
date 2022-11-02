@@ -47,6 +47,7 @@ type EventContext[T any] struct {
 	done             chan struct{}
 	topicPartition   TopicPartition
 	interjection     *interjection[T]
+	err              error
 }
 
 // A convenience function for creating unit tests for an EventContext from an incoming Kafka Record. All arguments other than `ctx`
@@ -98,6 +99,13 @@ func MockInterjectionEventContext[T any](ctx context.Context, topicPartition Top
 		interjection:   &interjection[T]{},
 	}
 	return ec
+}
+
+// Fail the event with the given error and return [Fail], which has the effect of marking the consumer as unhealthy and shutting it down.
+func (ec *EventContext[T]) Fail(err error) ExecutionState {
+	log.Errorf("failure processing event context for %+v, offset: %d, isInterjection: %v, err: %v", ec.topicPartition, ec.Offset(), ec.IsInterjection(), err)
+	ec.err = err
+	return Fail
 }
 
 func (ec *EventContext[T]) isRevoked() bool {

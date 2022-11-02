@@ -94,9 +94,11 @@ type EventSourceConfig struct {
 	OnPartitionWillRevoke SourcePartitionEventHandler
 	// Called when a partition has been revoked from the EventSource consumer client.
 	// This handler is invoked after GKES has stopped processing and has finished removing any associated resources for the partition.
-	OnPartitionRevoked          SourcePartitionEventHandler
+	OnPartitionRevoked SourcePartitionEventHandler
+	// The error handler invoked when record deserilaization errors occur for a given [EventSource]
 	DeserializationErrorHandler DeserializationErrorHandler
-	TxnErrorHandler             TxnErrorHandler
+	// The error handler invoked when errors occur in the transactionl producer for a given [EventSource]
+	TxnErrorHandler TxnErrorHandler
 }
 
 // A readonly wrapper of [EventSourceConfig]. When an [EventSource] is initialized, it reconciles the actual Topic configuration (NumPartitions)

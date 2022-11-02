@@ -75,7 +75,7 @@ func (p *Producer) ProduceAsync(ctx context.Context, record *Record, callback fu
 	if len(record.kRecord.Topic) == 0 {
 		record = record.WithTopic(p.destination.DefaultTopic)
 	}
-	p.client.Produce(ctx, record.toKafkaRecord(), func(r *kgo.Record, kErr error) {
+	p.client.Produce(ctx, record.asKgoRecord(), func(r *kgo.Record, kErr error) {
 		if callback != nil {
 			callback(record, kErr)
 		}
@@ -171,7 +171,7 @@ func (p *BatchProducer[S]) produceBatch(b *produceBatcher[S]) {
 }
 
 func (p *BatchProducer[S]) produceRecord(b *produceBatcher[S], record *Record) {
-	p.client.Produce(context.TODO(), record.toKafkaRecord(), func(kr *kgo.Record, err error) {
+	p.client.Produce(context.TODO(), record.asKgoRecord(), func(kr *kgo.Record, err error) {
 		record.err = err
 		b.recordComplete()
 	})

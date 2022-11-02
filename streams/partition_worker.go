@@ -15,6 +15,7 @@
 package streams
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -37,8 +38,12 @@ const (
 	// The offset for the associated EventContext will not be commited.
 	Incomplete ExecutionState = 1
 
-	Fatal       ExecutionState = 2
-	unknownType ExecutionState = 3
+	// Signifies that the consumer should no longer continue processing events. The EvntSource will go into an unhealthy state and execute [StopNow]
+	Fail ExecutionState = 2
+
+	// Signifies that the consumer should panic.
+	Fatal       ExecutionState = 3
+	unknownType ExecutionState = 4
 )
 
 type AsyncJob[T any] struct {
@@ -250,13 +255,23 @@ func (pw *partitionWorker[T]) work(interjections []interjection[T], waiter func(
 	}
 }
 
+func (pw *partitionWorker[T]) processEventState(ec *EventContext[T], state ExecutionState) bool {
+	if state == Fatal {
+		panic(errors.New("unhandled error"))
+	}
+	if state == Fail {
+		pw.eventSource.source.fail(ec.err)
+	}
+	return state == Complete
+}
+
 func (pw *partitionWorker[T]) waitForRevocation() {
 	pw.revocationWaiter.Wait() // wait until all pending events have been accpted by a producerNode
 	pw.revokedSignal <- struct{}{}
 }
 
 func (pw *partitionWorker[T]) processAsyncJob(job AsyncJob[T]) {
-	if job.Finalize() == Complete {
+	if pw.processEventState(job.ctx, job.Finalize()) {
 		job.ctx.complete()
 		<-pw.maxPending
 	}
@@ -274,7 +289,7 @@ func (pw *partitionWorker[T]) handleInterjection(ec *EventContext[T]) {
 		if inter.callback != nil {
 			inter.callback() // we need to close off 1-off interjections to prevent sourceConsumer from hanging
 		}
-	} else if ec.producer != nil && inter.interject(ec) == Complete {
+	} else if ec.producer != nil && pw.processEventState(ec, inter.interject(ec)) {
 		ec.complete()
 		<-pw.maxPending
 		inter.tick()
@@ -310,7 +325,7 @@ func (pw *partitionWorker[T]) forwardToEventSource(ec *EventContext[T]) {
 	offset := ec.Offset()
 	pw.highestOffset = offset + 1
 	record, _ := ec.Input()
-	if pw.eventSource.handleEvent(ec, record) == Complete {
+	if pw.processEventState(ec, pw.eventSource.handleEvent(ec, record)) {
 		ec.complete()
 		<-pw.maxPending
 	}

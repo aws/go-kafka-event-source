@@ -51,3 +51,8 @@ func DefaultTxnErrorHandler(err error) ErrorResponse {
 	log.Errorf("failing consumer due to eos txn error: %v", err)
 	return FailConsumer
 }
+
+// The default ProcessingErrorHandler. Invoked by [EventContext.Fail] and returns [Complete].
+func DefaultProcessingErrorHandler(userData any, err error) ExecutionState {
+	return Complete
+}

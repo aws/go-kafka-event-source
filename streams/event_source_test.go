@@ -15,6 +15,7 @@
 package streams
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestEventSourceInsert(t *testing.T) {
 
 	itemCount := 10000 //must be multiple of 10 for this to work
 
-	es, p, c := newTestEventSource()
+	es, p, c := newTestEventSource(nil)
 	p.produceMany(t, "int", itemCount)
 
 	es.ConsumeEvents()
@@ -73,6 +74,29 @@ func TestEventSourceInsert(t *testing.T) {
 	}
 }
 
+func TestEventSourceFail(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+		return
+	}
+
+	itemCount := 10 //must be multiple of 10 for this to work
+
+	es, p, _ := newTestEventSource(func(ec *EventContext[intStore], ir IncomingRecord) ExecutionState {
+		return ec.Fail(errors.New("test error"))
+	})
+	p.produceMany(t, "int", itemCount)
+
+	es.ConsumeEvents()
+
+	timer := time.NewTimer(defaultTestTimeout)
+	select {
+	case <-es.Done():
+	case <-timer.C:
+		t.Error("consumer did not shutdown on failure")
+	}
+}
+
 func TestEventSourceDelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -81,7 +105,7 @@ func TestEventSourceDelete(t *testing.T) {
 
 	itemCount := 10000 //must be multiple of 10 for this to work
 
-	es, p, c := newTestEventSource()
+	es, p, c := newTestEventSource(nil)
 	p.produceMany(t, "int", itemCount)
 	p.delete(t, "int", 0)
 

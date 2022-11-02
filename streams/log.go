@@ -182,16 +182,25 @@ func (klw kgoLogWrapper) Level() kgo.LogLevel {
 	return kgo.LogLevel(klw)
 }
 
+type lazyFormat struct {
+	msg     string
+	keyvals []interface{}
+}
+
+func (lf lazyFormat) String() string {
+	return fmt.Sprintf(lf.msg+"%+v", lf.keyvals)
+}
+
 func (klw kgoLogWrapper) Log(level kgo.LogLevel, msg string, keyvals ...interface{}) {
 	switch level {
 	case kgo.LogLevelDebug:
-		log.Debugf(msg, keyvals...)
+		log.Debugf("%v", lazyFormat{msg, keyvals})
 	case kgo.LogLevelInfo:
-		log.Infof(msg, keyvals...)
+		log.Infof("%v", lazyFormat{msg, keyvals})
 	case kgo.LogLevelWarn:
-		log.Warnf(msg, keyvals...)
+		log.Warnf("%v", lazyFormat{msg, keyvals})
 	case kgo.LogLevelError:
-		log.Errorf(msg, keyvals...)
+		log.Errorf("%v", lazyFormat{msg, keyvals})
 	}
 }
 

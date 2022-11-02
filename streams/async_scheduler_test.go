@@ -102,7 +102,7 @@ func TestAsyncJobScheduler_CapacityGreaterThanEOSProducer(t *testing.T) {
 	itemCount := 100000 // must be greater than the default EOS Producer capacity of 30k
 	processed := 0
 	done := make(chan struct{}, 1000)
-	es, p, _ := newTestEventSource()
+	es, p, _ := newTestEventSource(nil)
 	p.produceMany(t, "int", itemCount)
 	scheduler, _ := NewAsyncJobScheduler(es.ForkRunStatus(), func(key, value int) error {
 		time.Sleep(time.Millisecond)
