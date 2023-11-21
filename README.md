@@ -1,6 +1,6 @@
 ## Go Kafka Event Source
 
-GKES (Go Kafka Event Source) attempts to fill the gaps ub the Go/Kafka library ecosystem. It supplies EOS (Exactly Once Semantics),
+GKES (Go Kafka Event Source) attempts to fill the gaps in the Go/Kafka library ecosystem. It supplies EOS (Exactly Once Semantics),
 local state stores and incremental consumer rebalancing to Go Kafka consumer applications, making it a viable alternative to
 a traditional Kafka Streams application written in Java.
 
@@ -25,7 +25,7 @@ For API documentation on these modules, see https://pkg.go.dev/github.com/aws/go
 
 GKES is usable in it's current form but there are a few things slated for the very near future. This library is being used by AWS for internal workloads.
 
-- [X] More comprehensive documentation for and async processing - [Complete](./docs/asyncprocessing.md) 
+- [X] More comprehensive documentation for async processing - [Complete](./docs/asyncprocessing.md) 
 - [ ] More comprehensive documentation for StateStores - In Progress
 - [X] Per topic partitioner support for EventContext.Forward() and Producer/BatchProducer APIs, Currently, only the Java default murmur2 partitioner is supported - Complete
 - [ ] Instructions for testing locally - In progress
@@ -33,9 +33,9 @@ GKES is usable in it's current form but there are a few things slated for the ve
 
 ## Compatibility Notes
 
-It is recommnded tp use Go v1.19.2 or greater for GKES. There was a known compiler issue in previous versions of Go 1.19 which prevented modules using GKES from compiling. There was a back-port fix made to previous versions of Go, but it probably simpler and safer to update your Go environment to the latest available if you run into this issue.
+It is recommnded to use Go v1.19.2 or greater for GKES. There was a known compiler issue in previous versions of Go 1.19 which prevented modules using GKES from compiling. There was a back-port fix made to previous versions of Go, but it probably simpler and safer to update your Go environment to the latest available if you run into this issue.
 
-GKES has been extensively test with Kafka 3.2 but should be fine to use with any Kafka version > 2.5.1. Kafka versions < 2.5.1 are not likely to be compatible with GKES due to transaction semantics, and they have not been tested.
+GKES has been extensively tested with Kafka 3.2 but should be fine to use with any Kafka version > 2.5.1. Kafka versions < 2.5.1 are not likely to be compatible with GKES due to transaction semantics, and they have not been tested.
 
 ## Security
 
