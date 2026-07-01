@@ -23,5 +23,5 @@ require (
 	github.com/klauspost/compress v1.15.11 // indirect
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.2.0 // indirect
-	golang.org/x/crypto v0.0.0-20221005025214-4161e89ecf1b // indirect
+	golang.org/x/crypto v0.17.0 // indirect
 )
